@@ -1,0 +1,35 @@
+name: Build SWTG018AS-A V2.0 (Docker)
+
+# Same build the dev loop uses (scripts/build.ps1): repo Dockerfile + make MACHINE=...
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  docker-build:
+    runs-on: ubuntu-latest
+    env:
+      MACHINE: SWTG018AS_A_V_2_0
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # Makefile uses git describe
+
+      - name: Build dev image from the Dockerfile
+        run: docker build -q -t rtlplayground-dev .
+
+      - name: Build firmware
+        run: |
+          docker run --rm -v "$PWD:/workspace" rtlplayground-dev make MACHINE=$MACHINE
+          # container runs as root; hand the output back to the runner user
+          sudo chown -R "$(id -u):$(id -g)" output
+          ls -l output/$MACHINE/*.bin
+
+      - name: Upload image
+        uses: actions/upload-artifact@v4
+        with:
+          name: rtlplayground-${{ env.MACHINE }}
+          path: output/${{ env.MACHINE }}/*.bin
+          retention-days: 14
