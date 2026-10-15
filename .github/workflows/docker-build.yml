@@ -18,6 +18,9 @@ jobs:
     env:
       MACHINE: SWTG018AS_A_V_2_0
     steps:
+      - name: Use Git Bash (not WSL bash) for the bash steps
+        shell: powershell
+        run: Add-Content -Path $env:GITHUB_PATH -Value 'C:\Program Files\Git\bin'
       - run: git config --global core.autocrlf false
       - uses: actions/checkout@v4
         with:

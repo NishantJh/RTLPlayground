@@ -15,6 +15,9 @@ jobs:
         shell: bash
     steps:
       # Keep LF line endings: the tree is bind-mounted into a Linux container.
+      - name: Use Git Bash (not WSL bash) for the bash steps
+        shell: powershell
+        run: Add-Content -Path $env:GITHUB_PATH -Value 'C:\Program Files\Git\bin'
       - run: git config --global core.autocrlf false
       - uses: actions/checkout@v6
 
