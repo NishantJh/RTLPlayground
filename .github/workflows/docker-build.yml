@@ -23,6 +23,8 @@ jobs:
       - name: Build firmware
         run: |
           docker run --rm -v "$PWD:/workspace" rtlplayground-dev make MACHINE=$MACHINE
+          # container runs as root; hand the output back to the runner user
+          sudo chown -R "$(id -u):$(id -g)" output
           ls -l output/$MACHINE/*.bin
 
       - name: Upload image
