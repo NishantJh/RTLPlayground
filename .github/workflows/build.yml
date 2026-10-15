@@ -18,10 +18,11 @@ jobs:
       - name: Build dev image from the Dockerfile
         run: docker build -q -t rtlplayground-dev .
 
+      # Windows checkouts can't create the machine/*.c symlinks; a clone inside the Linux container can.
       - name: Build and test inside the container
         run: >
           docker run --rm -v "${env:GITHUB_WORKSPACE}:/workspace" -w /workspace rtlplayground-dev
-          sh -ec "make -C test
+          sh -ec "git clone -q /workspace /src && cd /src && make -C test
           && make machine_check
           && make CI=1 MACHINE=KP_9000_6XHML_X2
           && make CI=1 MACHINE=KP_9000_9XHML_X_V3_1
