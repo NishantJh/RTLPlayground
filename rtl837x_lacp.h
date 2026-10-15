@@ -30,9 +30,19 @@ extern __xdata uint16_t lacp_lag_ports[LACP_NUM_LAGS];
 extern __xdata uint8_t  lacp_agg_sys[LACP_NUM_LAGS][MAC_ADDR_LEN];
 extern __xdata uint8_t  lacp_agg_valid[LACP_NUM_LAGS];
 extern __xdata uint16_t lacp_members_last[LACP_NUM_LAGS];
+extern __xdata uint16_t lacp_agg_key[LACP_NUM_LAGS];
+extern __xdata uint8_t  lacp_agg_speed[LACP_NUM_LAGS];
+extern __xdata uint8_t  lacp_port_speed[10];
+extern __xdata uint8_t  lacp_churn[10];
+
+/* Churn detection flags (802.1AX 6.4.17): the port failed to reach SYNC within
+ * LACP_CHURN_TIME. Cleared as soon as it does, or when the link goes down. */
+#define LACP_CHURN_ACTOR	0x01
+#define LACP_CHURN_PARTNER	0x02
 
 #define SLOW_PROTO_ETHERTYPE	0x8809
 #define SLOW_PROTO_SUBTYPE_LACP	0x01
+#define SLOW_PROTO_SUBTYPE_MARKER	0x02
 #define LACP_VERSION		0x01
 #define LACP_DST5		0x02
 
@@ -55,11 +65,14 @@ extern __xdata uint16_t lacp_members_last[LACP_NUM_LAGS];
 #define LACP_STATE_DEFAULTED	0x40	/* partner information is the default */
 #define LACP_STATE_EXPIRED	0x80
 
+#define LACP_SPEED_DOWN		0xff	/* port_link_speed(): no link */
+
 #define LACP_STATE_FULL		(LACP_STATE_SYNC | LACP_STATE_COLLECTING | LACP_STATE_DISTRIBUTING)
 
 #define LACP_FAST_PERIODIC	50
 #define LACP_SLOW_PERIODIC	1500
-#define LACP_SHORT_TIMEOUT	200
+#define LACP_SHORT_TIMEOUT	150	/* 3 s, i.e. 3 x LACP_FAST_PERIODIC */
+#define LACP_CHURN_TIME		3000	/* 60 s */
 
 #define LACP_RX_INITIALIZE	0
 #define LACP_RX_PORT_DISABLED	1

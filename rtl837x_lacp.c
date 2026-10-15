@@ -77,11 +77,40 @@ struct lacpdu_in {
 	struct lacp_info partner;
 };
 
+/* Marker PDU / Marker Response (43.5): both have the same layout, only the TLV type differs */
+struct marker_body {
+	uint16_t ethertype;
+	uint8_t  subtype;
+	uint8_t  version;
+	uint8_t  tlv;
+	uint8_t  tlv_len;
+	uint16_t req_port;
+	uint8_t  req_sys[MAC_ADDR_LEN];
+	uint8_t  req_tid[4];
+	uint8_t  pad[2];
+	uint8_t  tlv_terminator;
+	uint8_t  terminator_len;
+	uint8_t  terminator_reserved[90];
+};
+
+struct marker_pdu_out {
+	uint8_t  dst[MAC_ADDR_LEN];
+	uint8_t  src[MAC_ADDR_LEN];
+	struct rtl_tag rtl_tag;
+	struct marker_body body;
+};
+
+#define MARKER_TLV_INFO		0x01
+#define MARKER_TLV_RESPONSE	0x02
+#define MARKER_TLV_LEN		0x10
+
 __xdata uint8_t lacp_rxbody;
 
 #define LACP_O ((__xdata struct lacpdu        *)&uip_buf[RTL_FRAME_DESC_SIZE])
 #define LACP_H ((__xdata struct lacpdu_in_hdr *)&uip_buf[0])
 #define LACP_I ((__xdata struct lacpdu_in     *)&uip_buf[lacp_rxbody])
+#define MARKER_I ((__xdata struct marker_body  *)&uip_buf[lacp_rxbody])
+#define MARKER_O ((__xdata struct marker_pdu_out *)&uip_buf[RTL_FRAME_DESC_SIZE])
 
 __xdata uint8_t  lacp_actor_state[10];
 __xdata uint8_t  lacp_rx_state[10];
@@ -94,6 +123,12 @@ __xdata uint16_t lacp_partner_port_prio[10];
 __xdata uint16_t lacp_periodic[10];
 __xdata uint16_t lacp_timeout[10];
 __xdata uint8_t  lacp_ntt[10];
+__xdata uint8_t  lacp_port_speed[10];
+__xdata uint8_t  lacp_churn[10];
+__xdata uint16_t lacp_churn_actor[10];
+__xdata uint16_t lacp_churn_partner[10];
+__xdata uint8_t  lacp_speed_div;
+__xdata uint8_t  lacp_marker_info[12];
 
 #define LACP_TICK_STEP	(SYS_TICK_HZ / 50)
 #define LACP_CATCH_UP	8
@@ -103,6 +138,8 @@ extern volatile __xdata uint32_t ticks;
 __xdata uint16_t lacp_lag_ports[LACP_NUM_LAGS];
 __xdata uint8_t  lacp_port_lag[10];
 __xdata uint8_t  lacp_agg_sys[LACP_NUM_LAGS][MAC_ADDR_LEN];
+__xdata uint16_t lacp_agg_key[LACP_NUM_LAGS];
+__xdata uint8_t  lacp_agg_speed[LACP_NUM_LAGS];
 __xdata uint8_t  lacp_agg_valid[LACP_NUM_LAGS];
 __xdata uint16_t lacp_members_last[LACP_NUM_LAGS];
 
@@ -134,6 +171,11 @@ static uint8_t lacp_port_selected(uint8_t port)
 		return 0;
 	if (!lacp_agg_valid[lag])
 		return 0;
+	/* One aggregator takes the links of one partner system AND one partner key, at one speed */
+	if (lacp_port_speed[port] == LACP_SPEED_DOWN || lacp_port_speed[port] != lacp_agg_speed[lag])
+		return 0;
+	if (lacp_partner_key[port] != lacp_agg_key[lag])
+		return 0;
 	return lacp_sys_eq(lacp_partner_sys[port], lacp_agg_sys[lag]);
 }
 
@@ -145,10 +187,16 @@ static uint8_t lacp_mux_machine(uint8_t port)
 
 	if (lacp_port_selected(port)) {
 		new |= LACP_STATE_SYNC;
+		/* Decoupled control: collect once the partner is in sync, distribute only
+		 * once the partner collects too, so no frame goes to a port that drops it */
 		if (lacp_partner_state[port] & LACP_STATE_SYNC)
-			new |= LACP_STATE_COLLECTING | LACP_STATE_DISTRIBUTING;
+			new |= LACP_STATE_COLLECTING;
 		else
 			new &= ~(LACP_STATE_COLLECTING | LACP_STATE_DISTRIBUTING);
+		if ((new & LACP_STATE_COLLECTING) && (lacp_partner_state[port] & LACP_STATE_COLLECTING))
+			new |= LACP_STATE_DISTRIBUTING;
+		else
+			new &= ~LACP_STATE_DISTRIBUTING;
 	} else {
 		new &= ~(LACP_STATE_SYNC | LACP_STATE_COLLECTING | LACP_STATE_DISTRIBUTING);
 	}
@@ -169,7 +217,7 @@ void lacp_mux_update(void) __banked
 			if (lacp_port_lag[i] != lag)
 				continue;
 			if ((lacp_actor_state[i] & LACP_STATE_FULL) == LACP_STATE_FULL
-			    && (lacp_partner_state[i] & LACP_STATE_SYNC))
+			    && (lacp_partner_state[i] & LACP_STATE_COLLECTING))
 				lacp_scratch_mask |= PORT_BIT(i);
 		}
 		if (lacp_scratch_mask != lacp_members_last[lag]) {
@@ -180,11 +228,9 @@ void lacp_mux_update(void) __banked
 }
 
 
-void lacp_send(uint8_t port) __banked
+/* Slow-protocol header, shared by the LACPDU and the Marker Response (same prefix) */
+static void lacp_tx_hdr(uint8_t port)
 {
-	uint16_t saved_mgmt_vlan;
-
-	memset((__xdata uint8_t *)LACP_O, 0, sizeof(struct lacpdu));
 	LACP_O->dst[0] = 0x01; LACP_O->dst[1] = 0x80; LACP_O->dst[2] = 0xc2;
 	LACP_O->dst[3] = 0x00; LACP_O->dst[4] = 0x00; LACP_O->dst[5] = LACP_DST5;
 	memcpy(LACP_O->src, uip_ethaddr.addr, MAC_ADDR_LEN);
@@ -194,6 +240,22 @@ void lacp_send(uint8_t port) __banked
 	LACP_O->rtl_tag.reason = 0x00;
 	LACP_O->rtl_tag.flags = HTONS(RTL_TAG_LEARN_DIS | RTL_TAG_KEEP);
 	LACP_O->rtl_tag.pmask = HTONS(PORT_BIT(port));
+}
+
+static void lacp_tx(uint16_t len)
+{
+	uint16_t saved_mgmt_vlan = management_vlan;
+
+	management_vlan = 0;
+	uip_len = len;
+	tcpip_output();
+	management_vlan = saved_mgmt_vlan;
+}
+
+void lacp_send(uint8_t port) __banked
+{
+	memset((__xdata uint8_t *)LACP_O, 0, sizeof(struct lacpdu));
+	lacp_tx_hdr(port);
 
 	LACP_O->ethertype = HTONS(SLOW_PROTO_ETHERTYPE);
 	LACP_O->subtype = SLOW_PROTO_SUBTYPE_LACP;
@@ -224,11 +286,34 @@ void lacp_send(uint8_t port) __banked
 	LACP_O->terminator_len = 0x00;
 
 	lacp_ntt[port] = 0;
-	saved_mgmt_vlan = management_vlan;
-	management_vlan = 0;
-	uip_len = sizeof(struct lacpdu);
-	tcpip_output();
-	management_vlan = saved_mgmt_vlan;
+	lacp_tx(sizeof(struct lacpdu));
+}
+
+
+/* Answer a Marker PDU with a Marker Response carrying the same requester data. We keep no
+ * frame in flight on a link, so the response can go out at once. */
+static void lacp_marker_in(void)
+{
+	__xdata uint8_t port;
+
+	port = ((uint8_t)HTONS(LACP_H->rtl_tag.pmask)) & 0x0f;
+	if (port < machine.min_port || port > machine.max_port
+	    || lacp_port_lag[port] == LACP_LAG_NONE
+	    || MARKER_I->tlv != MARKER_TLV_INFO || MARKER_I->tlv_len != MARKER_TLV_LEN) {
+		uip_len = 0;
+		return;
+	}
+	/* the response is built over the received frame, whose header sits elsewhere */
+	memcpy(lacp_marker_info, (__xdata uint8_t *)&MARKER_I->req_port, sizeof(lacp_marker_info));
+	memset((__xdata uint8_t *)MARKER_O, 0, sizeof(struct marker_pdu_out));
+	lacp_tx_hdr(port);
+	MARKER_O->body.ethertype = HTONS(SLOW_PROTO_ETHERTYPE);
+	MARKER_O->body.subtype = SLOW_PROTO_SUBTYPE_MARKER;
+	MARKER_O->body.version = LACP_VERSION;
+	MARKER_O->body.tlv = MARKER_TLV_RESPONSE;
+	MARKER_O->body.tlv_len = MARKER_TLV_LEN;
+	memcpy((__xdata uint8_t *)&MARKER_O->body.req_port, lacp_marker_info, sizeof(lacp_marker_info));
+	lacp_tx(sizeof(struct marker_pdu_out));
 }
 
 
@@ -237,6 +322,11 @@ void lacp_in(void) __banked
 	__xdata uint8_t port, lag;
 
 	lacp_rxbody = TRAP_RX_BODY();
+	if (uip_len >= lacp_rxbody + 20 && MARKER_I->ethertype == HTONS(SLOW_PROTO_ETHERTYPE)
+	    && MARKER_I->subtype == SLOW_PROTO_SUBTYPE_MARKER) {
+		lacp_marker_in();
+		return;
+	}
 	if (uip_len < lacp_rxbody + sizeof(struct lacpdu_in)) {
 		uip_len = 0;
 		return;
@@ -264,6 +354,7 @@ void lacp_in(void) __banked
 #endif
 
 	lacp_rx_count[port]++;
+	lacp_port_speed[port] = port_link_speed(port);
 
 	memcpy(lacp_partner_sys[port], LACP_I->actor.sys, MAC_ADDR_LEN);
 	lacp_scratch_mask = HTONS(LACP_I->actor.key);
@@ -279,8 +370,10 @@ void lacp_in(void) __banked
 	lacp_rx_state[port] = LACP_RX_CURRENT;
 	lacp_timeout[port] = LACP_SHORT_TIMEOUT;
 
-	if (!lacp_agg_valid[lag]) {
+	if (!lacp_agg_valid[lag] && lacp_port_speed[port] != LACP_SPEED_DOWN) {
 		memcpy(lacp_agg_sys[lag], LACP_I->actor.sys, MAC_ADDR_LEN);
+		lacp_agg_key[lag] = lacp_partner_key[port];
+		lacp_agg_speed[lag] = lacp_port_speed[port];
 		lacp_agg_valid[lag] = 1;
 	}
 
@@ -296,11 +389,42 @@ void lacp_in(void) __banked
 
 
 
+/* Churn detection (802.1AX 6.4.17): flag a port that has stayed out of SYNC for a minute,
+ * on our side and on the partner's. No link counts as nothing to detect. */
+static void lacp_churn_check(uint8_t i)
+{
+	if (lacp_port_speed[i] == LACP_SPEED_DOWN || (lacp_actor_state[i] & LACP_STATE_SYNC)) {
+		lacp_churn_actor[i] = 0;
+		lacp_churn[i] &= ~LACP_CHURN_ACTOR;
+	} else if (!(lacp_churn[i] & LACP_CHURN_ACTOR) && ++lacp_churn_actor[i] >= LACP_CHURN_TIME) {
+		lacp_churn[i] |= LACP_CHURN_ACTOR;
+	}
+	if (lacp_port_speed[i] == LACP_SPEED_DOWN || (lacp_partner_state[i] & LACP_STATE_SYNC)) {
+		lacp_churn_partner[i] = 0;
+		lacp_churn[i] &= ~LACP_CHURN_PARTNER;
+	} else if (!(lacp_churn[i] & LACP_CHURN_PARTNER) && ++lacp_churn_partner[i] >= LACP_CHURN_TIME) {
+		lacp_churn[i] |= LACP_CHURN_PARTNER;
+	}
+}
+
 static void lacp_step(void)
 {
+	/* Link speed changes slowly, and each lookup is a register read: once per second */
+	uint8_t speed_due = (++lacp_speed_div >= LACP_FAST_PERIODIC);
+
+	if (speed_due)
+		lacp_speed_div = 0;
+
 	for (uint8_t i = machine.min_port; i <= machine.max_port; i++) {
 		if (lacp_port_lag[i] == LACP_LAG_NONE)
 			continue;
+
+		if (speed_due) {
+			lacp_port_speed[i] = port_link_speed(i);
+			if (lacp_mux_machine(i))
+				lacp_ntt[i] = 1;
+		}
+		lacp_churn_check(i);
 
 		if (lacp_periodic[i]) {
 			lacp_periodic[i]--;
@@ -330,6 +454,8 @@ static void lacp_step(void)
 			continue;
 		for (uint8_t i = machine.min_port; i <= machine.max_port; i++) {
 			if (lacp_port_lag[i] == lag && lacp_rx_state[i] == LACP_RX_CURRENT
+			    && lacp_partner_key[i] == lacp_agg_key[lag]
+			    && lacp_port_speed[i] == lacp_agg_speed[lag]
 			    && lacp_sys_eq(lacp_partner_sys[i], lacp_agg_sys[lag])) {
 				any_current = 1;
 				break;
@@ -366,6 +492,10 @@ static void lacp_port_init(uint8_t port)
 	lacp_timeout[port] = 0;
 	lacp_ntt[port] = 1;
 	lacp_rx_count[port] = 0;
+	lacp_port_speed[port] = port_link_speed(port);
+	lacp_churn[port] = 0;
+	lacp_churn_actor[port] = 0;
+	lacp_churn_partner[port] = 0;
 }
 
 static void lacp_port_release(uint8_t port)
@@ -375,6 +505,7 @@ static void lacp_port_release(uint8_t port)
 	lacp_partner_state[port] = 0;
 	lacp_rx_state[port] = LACP_RX_INITIALIZE;
 	lacp_rx_count[port] = 0;
+	lacp_churn[port] = 0;
 	memset(lacp_partner_sys[port], 0, MAC_ADDR_LEN);
 }
 
@@ -405,6 +536,8 @@ void lacp_init(void) __banked
 		lacp_port_lag[i] = LACP_LAG_NONE;
 		lacp_actor_state[i] = 0;
 		lacp_ntt[i] = 0;
+		lacp_churn[i] = 0;
+		lacp_port_speed[i] = LACP_SPEED_DOWN;
 	}
 	for (uint8_t l = 0; l < LACP_NUM_LAGS; l++) {
 		lacp_lag_ports[l] = 0;
@@ -496,6 +629,8 @@ void lacp_show(void) __banked
 		print_string(" partner "); print_byte(lacp_partner_state[i]);
 		print_string(" rxst "); print_byte(lacp_rx_state[i]);
 		print_string(" rx "); print_short(lacp_rx_count[i]);
+		print_string(" speed "); print_byte(lacp_port_speed[i]);
+		print_string(" churn "); print_byte(lacp_churn[i]);
 		print_string(" psys ");
 		for (uint8_t j = 0; j < MAC_ADDR_LEN; j++)
 			print_byte(lacp_partner_sys[i][j]);

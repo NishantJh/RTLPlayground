@@ -68,6 +68,7 @@ void port_l2_setup(void) __banked;
 uint16_t port_lag_members_get(uint8_t lag) __banked;
 #define PORT_LAG_NONE 0xff
 uint8_t port_lag_of(uint8_t port) __banked;
+uint8_t port_link_speed(__xdata uint8_t port) __banked;
 void port_lag_members_set(__xdata uint8_t lag, __xdata uint16_t members) __banked;
 void port_lag_hash_set(__xdata uint8_t lag, __xdata uint8_t hash) __banked;
 void port_eee_enable_all(__xdata uint8_t speed) __banked;

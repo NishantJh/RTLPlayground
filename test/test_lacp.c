@@ -26,6 +26,10 @@ void print_byte(uint8_t b) { if (verbose) printf("%02x", b); }
 void print_short(uint16_t v) { if (verbose) printf("%04x", v); }
 void write_char(char c) { if (verbose) putchar(c); }
 
+/* Link speed mock: 5 = 2.5G on every port unless a test changes it */
+static uint8_t mock_speed[10] = {5, 5, 5, 5, 5, 5, 5, 5, 5, 5};
+uint8_t port_link_speed(uint8_t port) { return mock_speed[port]; }
+
 /* Trunk programming mock: record last mask per LAG + call count.
  * hw_members mirrors LAG 0 so the single-aggregator scenarios read naturally. */
 static uint16_t hw_members_lag[4];
@@ -120,6 +124,8 @@ void tcpip_output(void)
 
 /* ---------- simulated partner ---------- */
 
+static uint16_t partner_key = 0x0011;	/* the partner's actor key */
+
 /* Deliver a LACPDU into the switch on `port`, from partner system `sys`.
  * pstate = partner's Actor_State flags. If `echo`, the partner echoes the
  * switch's last-seen actor block back (fresh view) - required for quiescence. */
@@ -141,7 +147,7 @@ static void partner_frame_full(uint8_t port, const uint8_t sys[MAC_ADDR_LEN], ui
 	in.tlv_actor = 0x01; in.actor_len = 0x14;
 	in.actor.sys_prio = HTONS(0x8000);
 	memcpy(in.actor.sys, sys, MAC_ADDR_LEN);
-	in.actor.key = HTONS(0x0011);
+	in.actor.key = HTONS(partner_key);
 	in.actor.port_prio = HTONS(0x00ff);
 	in.actor.port = HTONS((uint16_t)port + 101);
 	in.actor.state = pstate;
@@ -200,9 +206,30 @@ static int failures;
 #define P_COL   LACP_STATE_COLLECTING
 #define P_DIST  LACP_STATE_DISTRIBUTING
 #define P_TO    LACP_STATE_TIMEOUT	/* partner requests short (fast) timeout */
+#define P_UP    (P_ACT|P_AGG|P_TO|P_SYNC|P_COL)	/* partner fully up: in sync and collecting */
 
 static const uint8_t SYS_A[MAC_ADDR_LEN] = {0x02,0xaa,0xaa,0xaa,0xaa,0x01};
 static const uint8_t SYS_B[MAC_ADDR_LEN] = {0x02,0xbb,0xbb,0xbb,0xbb,0x02};
+
+
+/* A Marker PDU as the reserved-multicast trap delivers it (no VLAN tag). */
+static void marker_frame(uint8_t port, uint8_t tlv, uint16_t len)
+{
+	uint8_t *p = uip_buf;
+	memset(uip_buf, 0, sizeof(uip_buf));
+	p[0] = 0x01; p[1] = 0x80; p[2] = 0xc2; p[5] = 0x02;
+	memcpy(p + 6, SYS_A, MAC_ADDR_LEN);
+	p[12] = 0x88; p[13] = 0x99; p[14] = 4;
+	p[19] = port;				/* rx pmask: ingress port */
+	p += RTL_FRAME_DESC_SIZE + RTL_TAG_SIZE;
+	p[0] = 0x88; p[1] = 0x09; p[2] = 0x02; p[3] = 0x01;
+	p[4] = tlv; p[5] = 0x10;
+	p[6] = 0x00; p[7] = port + 101;		/* requester port */
+	memcpy(p + 8, SYS_A, MAC_ADDR_LEN);	/* requester system */
+	p[14] = 0xde; p[15] = 0xad; p[16] = 0xbe; p[17] = 0xef;	/* transaction id */
+	uip_len = len;
+	lacp_in();
+}
 
 int main(int argc, char **argv)
 {
@@ -234,8 +261,8 @@ int main(int argc, char **argv)
 	      "T2 partner not in sync: actor SYNC only, trunk empty");
 
 	/* T3: partner in sync on ports 0,1 -> full converge, members 0x0003 */
-	partner_frame(0, SYS_A, P_ACT|P_AGG|P_TO|P_SYNC, 1);
-	partner_frame(1, SYS_A, P_ACT|P_AGG|P_TO|P_SYNC, 1);
+	partner_frame(0, SYS_A, P_UP, 1);
+	partner_frame(1, SYS_A, P_UP, 1);
 	step(8);
 	CHECK(hw_members == 0x0003
 	      && (lacp_actor_state[0] & (P_SYNC|P_COL|P_DIST)) == (P_SYNC|P_COL|P_DIST)
@@ -254,22 +281,22 @@ int main(int argc, char **argv)
 	      "T3b partner echo: recorded partner priorities/key/port echoed verbatim");
 
 	/* T4: mis-cabling - port 2 sees a DIFFERENT system: must stay out */
-	partner_frame(2, SYS_B, P_ACT|P_AGG|P_TO|P_SYNC, 1);
+	partner_frame(2, SYS_B, P_UP, 1);
 	step(8);
 	CHECK(hw_members == 0x0003 && !(lacp_actor_state[2] & P_SYNC),
 	      "T4 mis-cabling: port with different partner system stays out");
 
 	/* T5: register-write economy: stable state must not rewrite the trunk */
 	int calls_before = hw_set_calls;
-	partner_frame(0, SYS_A, P_ACT|P_AGG|P_TO|P_SYNC, 1);
-	partner_frame(1, SYS_A, P_ACT|P_AGG|P_TO|P_SYNC, 1);
+	partner_frame(0, SYS_A, P_UP, 1);
+	partner_frame(1, SYS_A, P_UP, 1);
 	step(64);
 	CHECK(hw_set_calls == calls_before,
 	      "T5 stable state: no redundant trunk register writes");
 
 	/* T6: stale echo triggers retransmit (update_NTT) */
 	int txc = tx_count[0];
-	partner_frame(0, SYS_A, P_ACT|P_AGG|P_TO|P_SYNC, 0 /* stale view of us */);
+	partner_frame(0, SYS_A, P_UP, 0 /* stale view of us */);
 	step(8);
 	CHECK(tx_count[0] > txc, "T6 update_NTT: stale partner view causes retransmit");
 
@@ -282,8 +309,8 @@ int main(int argc, char **argv)
 	/* T8: re-convergence with a NEW partner system after release */
 	/* (needs a fresh announce first so the echo below carries current state) */
 	step(4 * 0x0100 + 8);		/* let periodic TX refresh last_tx */
-	partner_frame(3, SYS_B, P_ACT|P_AGG|P_TO|P_SYNC, 1);
-	partner_frame(3, SYS_B, P_ACT|P_AGG|P_TO|P_SYNC, 1);
+	partner_frame(3, SYS_B, P_UP, 1);
+	partner_frame(3, SYS_B, P_UP, 1);
 	step(8);
 	CHECK(hw_members == 0x0008 && (lacp_actor_state[3] & P_COL),
 	      "T8 re-election: new partner system forms a fresh aggregate");
@@ -302,7 +329,7 @@ int main(int argc, char **argv)
 	step(8);			/* announce */
 	for (int r = 0; r < 2; r++) {	/* two rounds so echoes carry fresh state */
 		for (int p = 0; p < 4; p++)
-			partner_frame(p, SYS_A, P_ACT|P_AGG|P_TO|P_SYNC, 1);
+			partner_frame(p, SYS_A, P_UP, 1);
 		step(8);
 	}
 	CHECK(lacpEnabled == 1
@@ -317,7 +344,7 @@ int main(int argc, char **argv)
 
 	/* T12: a port in no LACP LAG ignores LACPDUs entirely */
 	int rx5_before = tx_count[5];
-	partner_frame(5, SYS_B, P_ACT|P_AGG|P_TO|P_SYNC, 1);
+	partner_frame(5, SYS_B, P_UP, 1);
 	step(8);
 	CHECK(!(lacp_actor_state[5] & P_SYNC) && hw_members_lag[2] == 0x000c,
 	      "T12 unassigned port: LACPDU ignored, no state change");
@@ -343,11 +370,11 @@ int main(int argc, char **argv)
 	uint16_t rx_before = lacp_rx_count[0];
 	lacp_partner_state[0] = 0;		/* all three are written past the ethertype gate */
 	memset(lacp_partner_sys[0], 0, MAC_ADDR_LEN);
-	partner_frame_trap(0, SYS_A, P_ACT|P_AGG|P_TO|P_SYNC, 1);
+	partner_frame_trap(0, SYS_A, P_UP, 1);
 	int trap_ok = lacp_rx_count[0] == (uint16_t)(rx_before + 1)
-		   && lacp_partner_state[0] == (P_ACT|P_AGG|P_TO|P_SYNC)
+		   && lacp_partner_state[0] == (P_UP)
 		   && !memcmp(lacp_partner_sys[0], SYS_A, MAC_ADDR_LEN);
-	partner_frame(0, SYS_A, P_ACT|P_AGG|P_TO|P_SYNC, 1);
+	partner_frame(0, SYS_A, P_UP, 1);
 	CHECK(trap_ok && lacp_rx_count[0] == (uint16_t)(rx_before + 2),
 	      "T15 trapped LACPDU parses like a forwarded one");
 
@@ -359,21 +386,21 @@ int main(int argc, char **argv)
 	lacp_lag_set(0, 0x0003);
 	step(8);
 	for (int r = 0; r < 3; r++) {
-		partner_frame(0, SYS_A, P_ACT|P_AGG|P_TO|P_SYNC, 1);
-		partner_frame(1, SYS_A, P_ACT|P_AGG|P_TO|P_SYNC, 1);
+		partner_frame(0, SYS_A, P_UP, 1);
+		partner_frame(1, SYS_A, P_UP, 1);
 		step(8);
 	}
 	for (int t = 0; t < 40; t++) {		/* port 1 moved to B, port 0 still on A */
-		partner_frame(0, SYS_A, P_ACT|P_AGG|P_TO|P_SYNC, 1);
-		partner_frame(1, SYS_B, P_ACT|P_AGG|P_TO|P_SYNC, 1);
+		partner_frame(0, SYS_A, P_UP, 1);
+		partner_frame(1, SYS_B, P_UP, 1);
 		step(4 * 40);
 	}
 	int stayed_out = hw_members == 0x0001 && !(lacp_actor_state[1] & P_SYNC);
 	for (int t = 0; t < 60; t++)		/* port 0 unplugged from A, past the short timeout */
-		{ partner_frame(1, SYS_B, P_ACT|P_AGG|P_TO|P_SYNC, 1); step(4 * 40); }
+		{ partner_frame(1, SYS_B, P_UP, 1); step(4 * 40); }
 	for (int t = 0; t < 40; t++) {		/* port 0 now on B as well */
-		partner_frame(0, SYS_B, P_ACT|P_AGG|P_TO|P_SYNC, 1);
-		partner_frame(1, SYS_B, P_ACT|P_AGG|P_TO|P_SYNC, 1);
+		partner_frame(0, SYS_B, P_UP, 1);
+		partner_frame(1, SYS_B, P_UP, 1);
 		step(4 * 40);
 	}
 	CHECK(stayed_out && hw_members == 0x0003 && !memcmp(lacp_agg_sys[0], SYS_B, MAC_ADDR_LEN),
@@ -396,8 +423,8 @@ int main(int argc, char **argv)
 	lacp_lag_set(1, 0x0030);		/* ports 4,5 */
 	step(8);
 	for (int r = 0; r < 2; r++) {
-		partner_frame(4, SYS_A, P_ACT|P_AGG|P_TO|P_SYNC, 1);
-		partner_frame(5, SYS_A, P_ACT|P_AGG|P_TO|P_SYNC, 1);
+		partner_frame(4, SYS_A, P_UP, 1);
+		partner_frame(5, SYS_A, P_UP, 1);
 		step(8);
 	}
 	int converged = hw_members_lag[1] == 0x0030;
@@ -415,7 +442,7 @@ int main(int argc, char **argv)
 	 * for "lacp show" to report as if the port still heard it. */
 	lacp_lag_set(1, 0x0030);
 	step(8);
-	partner_frame(4, SYS_A, P_ACT|P_AGG|P_TO|P_SYNC, 1);
+	partner_frame(4, SYS_A, P_UP, 1);
 	step(8);
 	int had_partner = lacp_rx_state[4] == LACP_RX_CURRENT && lacp_rx_count[4] > 0;
 	lacp_lag_set(1, 0);
@@ -428,8 +455,8 @@ int main(int argc, char **argv)
 	lacp_lag_set(1, 0x0030);
 	step(8);
 	for (int r = 0; r < 2; r++) {
-		partner_frame(4, SYS_A, P_ACT|P_AGG|P_TO|P_SYNC, 1);
-		partner_frame(5, SYS_A, P_ACT|P_AGG|P_TO|P_SYNC, 1);
+		partner_frame(4, SYS_A, P_UP, 1);
+		partner_frame(5, SYS_A, P_UP, 1);
 		step(8);
 	}
 	int before = hw_set_calls;
@@ -443,7 +470,7 @@ int main(int argc, char **argv)
 	 * LACPDU; the partner block would be read from stale buffer bytes. */
 	lacp_lag_set(1, 0x0030);
 	step(8);
-	partner_frame_len(4, SYS_A, P_ACT|P_AGG|P_TO|P_SYNC, 1, 40);	/* cut before the partner block */
+	partner_frame_len(4, SYS_A, P_UP, 1, 40);	/* cut before the partner block */
 	CHECK(lacp_rx_count[4] == 0 && lacp_rx_state[4] == LACP_RX_INITIALIZE,
 	      "T22 truncated LACPDU ignored: the port does not record it");
 	lacp_lag_set(1, 0);
@@ -455,8 +482,8 @@ int main(int argc, char **argv)
 	lacp_lag_set(1, 0x0030);
 	step(8);
 	for (int r = 0; r < 2; r++) {
-		partner_frame(4, SYS_A, P_ACT|P_AGG|P_SYNC, 1);
-		partner_frame(5, SYS_A, P_ACT|P_AGG|P_SYNC, 1);
+		partner_frame(4, SYS_A, P_UP & ~P_TO, 1);
+		partner_frame(5, SYS_A, P_UP & ~P_TO, 1);
 		step(8);
 	}
 	int slow_converged = hw_members_lag[1] == 0x0030;
@@ -469,9 +496,122 @@ int main(int argc, char **argv)
 	 * cabled to each other) must not be taken for a partner. */
 	lacp_lag_set(1, 0x0030);
 	step(8);
-	partner_frame(4, uip_ethaddr.addr, P_ACT|P_AGG|P_TO|P_SYNC, 1);
+	partner_frame(4, uip_ethaddr.addr, P_UP, 1);
 	CHECK(lacp_rx_count[4] == 0 && lacp_rx_state[4] == LACP_RX_INITIALIZE,
 	      "T24 own system id: LACPDU ignored");
+	lacp_lag_set(1, 0);
+
+	/* T25: decoupled control. The partner is in sync but not collecting yet: we
+	 * collect, and wait to distribute (and join the trunk) until it collects too. */
+	lacp_lag_set(1, 0x0030);
+	step(8);
+	for (int r = 0; r < 2; r++) {
+		partner_frame(4, SYS_A, P_UP & ~P_COL, 1);
+		step(8);
+	}
+	int coll_only = (lacp_actor_state[4] & P_COL) && !(lacp_actor_state[4] & P_DIST)
+			&& hw_members_lag[1] == 0;
+	partner_frame(4, SYS_A, P_UP, 1);
+	CHECK(coll_only && (lacp_actor_state[4] & P_DIST) && hw_members_lag[1] == 0x0010,
+	      "T25 decoupled: collect on partner SYNC, distribute and join on partner COLLECTING");
+	partner_frame(4, SYS_A, P_UP & ~P_COL, 1);
+	CHECK((lacp_actor_state[4] & P_COL) && !(lacp_actor_state[4] & P_DIST) && hw_members_lag[1] == 0,
+	      "T25b partner stops collecting: we stop distributing and leave the trunk");
+	lacp_lag_set(1, 0);
+
+	/* T26: same partner system, different key = a different aggregate. */
+	lacp_lag_set(1, 0x0030);
+	step(8);
+	for (int r = 0; r < 3; r++) {
+		partner_key = 0x0011;
+		partner_frame(4, SYS_A, P_UP, 1);
+		partner_key = 0x0022;
+		partner_frame(5, SYS_A, P_UP, 1);
+		step(8);
+	}
+	CHECK(hw_members_lag[1] == 0x0010 && !(lacp_actor_state[5] & P_SYNC) && lacp_agg_key[1] == 0x0011,
+	      "T26 partner key: same system with another key does not join the aggregator");
+	partner_key = 0x0011;
+	lacp_lag_set(1, 0);
+
+	/* T27: Marker PDUs are answered on the receiving port with a Marker Response. */
+	lacp_lag_set(1, 0x0030);
+	step(8);
+	int mk_tx = tx_count[4], other_tx = tx_count[5];
+	marker_frame(4, 0x01, 20 + 112);
+	uint8_t *rsp = (uint8_t *)&last_tx[4];
+	CHECK(tx_count[4] == mk_tx + 1 && tx_count[5] == other_tx
+	      && rsp[0] == 0x01 && rsp[1] == 0x80 && rsp[2] == 0xc2 && rsp[5] == 0x02
+	      && rsp[20] == 0x88 && rsp[21] == 0x09 && rsp[22] == 0x02 && rsp[23] == 0x01
+	      && rsp[24] == 0x02 && rsp[25] == 0x10
+	      && rsp[26] == 0x00 && rsp[27] == 105 && !memcmp(rsp + 28, SYS_A, MAC_ADDR_LEN)
+	      && rsp[34] == 0xde && rsp[35] == 0xad && rsp[36] == 0xbe && rsp[37] == 0xef
+	      && rsp[40] == 0x00 && rsp[41] == 0x00,
+	      "T27 Marker PDU answered: same requester data, Marker Response TLV, on the same port");
+	mk_tx = tx_count[4];
+	other_tx = tx_count[6];
+	marker_frame(4, 0x02, 20 + 112);	/* a Marker Response is not answered */
+	marker_frame(4, 0x01, 18);		/* truncated */
+	marker_frame(6, 0x01, 20 + 112);	/* port outside any group */
+	CHECK(tx_count[4] == mk_tx && tx_count[6] == other_tx, "T27b response, runt and non-member Marker: no answer");
+	lacp_lag_set(1, 0);
+
+	/* T28: churn. A member with link and no sync for 60 s is flagged, until it syncs. */
+	lacp_lag_set(1, 0x0030);
+	step(4 * (LACP_CHURN_TIME - 10));
+	int early = lacp_churn[4];
+	step(4 * 20);
+	int flagged = lacp_churn[4] == (LACP_CHURN_ACTOR | LACP_CHURN_PARTNER);
+	for (int r = 0; r < 3; r++) {
+		partner_frame(4, SYS_A, P_UP, 1);
+		step(8);
+	}
+	CHECK(early == 0 && flagged && lacp_churn[4] == 0,
+	      "T28 churn: flagged after 60 s out of sync, cleared once in sync");
+	mock_speed[5] = LACP_SPEED_DOWN;
+	step(4 * (LACP_CHURN_TIME + 10));
+	CHECK(lacp_churn[5] == 0, "T28b no churn on a port without link");
+	lacp_lag_set(1, 0);
+	mock_speed[5] = 5;
+
+	/* T29: members must run at one speed. Port 5 drops to 1G and leaves the trunk. */
+	lacp_lag_set(1, 0x0030);
+	step(8);
+	for (int r = 0; r < 3; r++) {
+		partner_frame(4, SYS_A, P_UP, 1);
+		partner_frame(5, SYS_A, P_UP, 1);
+		step(8);
+	}
+	int both = hw_members_lag[1] == 0x0030;
+	mock_speed[5] = 2;			/* 1G */
+	for (int t = 0; t < 20; t++) {
+		partner_frame(4, SYS_A, P_UP, 1);
+		partner_frame(5, SYS_A, P_UP, 1);
+		step(4 * 10);
+	}
+	int split = hw_members_lag[1] == 0x0010 && !(lacp_actor_state[5] & P_SYNC);
+	mock_speed[5] = 5;
+	for (int t = 0; t < 20; t++) {
+		partner_frame(4, SYS_A, P_UP, 1);
+		partner_frame(5, SYS_A, P_UP, 1);
+		step(4 * 10);
+	}
+	CHECK(both && split && hw_members_lag[1] == 0x0030,
+	      "T29 speed: a member at another speed is kept out, and rejoins when it matches");
+	lacp_lag_set(1, 0);
+
+	/* T30: the standard short timeout, 3 s of silence (600 ticks at 200 Hz). */
+	lacp_lag_set(1, 0x0030);
+	step(8);
+	for (int r = 0; r < 3; r++) {
+		partner_frame(4, SYS_A, P_UP, 1);
+		step(8);
+	}
+	step(560);
+	int still = hw_members_lag[1] == 0x0010;
+	step(80);
+	CHECK(LACP_SHORT_TIMEOUT == 150 && still && hw_members_lag[1] == 0,
+	      "T30 short timeout is 3 s: member kept at 2.8 s, dropped by 3.2 s");
 	lacp_lag_set(1, 0);
 
 	printf("\n%s (%d failure%s)\n", failures ? "SANDBOX: FAILURES" : "SANDBOX: ALL PASS",
