@@ -29,6 +29,23 @@
   --sel:rgba(0,114,212,.12);--shadow:0 2px 10px rgba(80,70,40,.12);
   --s10:#ad8900;--s100:#ad8900;--s1000:#489100;--s2g5:#009c8f;--s5g:#009c8f;--s10g:#0072d4;
 }
+:root[data-theme="uni-light"]{
+  --bg:#f4f5f6;--panel:#ffffff;--panel2:#eef0f2;--bd:#e3e5e8;--fg:#212327;--fg2:#6b7079;
+  --ac:#006fff;--acfg:#ffffff;--ok:#00a35a;--bad:#e5484d;--warn:#c27c0e;--cy:#0b97b8;
+  --sel:rgba(0,111,255,.08);--shadow:0 1px 3px rgba(18,22,30,.08);--rad:12px;
+  --s10:#f5a524;--s100:#f5a524;--s1000:#00a35a;--s2g5:#006fff;--s5g:#006fff;--s10g:#7c4dff;
+  --face:#2b2e33;--face2:#1d1f23;
+}
+:root[data-theme="uni-dark"]{
+  --bg:#131416;--panel:#1c1d20;--panel2:#26282c;--bd:#2e3034;--fg:#e8e9eb;--fg2:#8e939b;
+  --ac:#4797ff;--acfg:#ffffff;--ok:#2fc27a;--bad:#ff6369;--warn:#f0b13c;--cy:#3fc6e0;
+  --sel:rgba(71,151,255,.14);--shadow:0 1px 3px rgba(0,0,0,.4);--rad:12px;
+  --s10:#f0b13c;--s100:#f0b13c;--s1000:#2fc27a;--s2g5:#4797ff;--s5g:#4797ff;--s10g:#a78bfa;
+  --face:#0d0e10;--face2:#060708;
+}
+:root[data-theme^="uni"] #nav{border-right-color:transparent}
+:root[data-theme^="uni"] .card{border-color:transparent}
+:root[data-theme^="uni"] #navlist li.act{font-weight:600}
 *{box-sizing:border-box;margin:0}
 html,body{height:100%}
 body{
@@ -79,6 +96,7 @@ section.tab.act{display:block}
   background:var(--panel);border:1px solid var(--bd);border-radius:10px;
   box-shadow:var(--shadow);padding:16px 18px;margin-bottom:16px;
 }
+.card{border-radius:var(--rad,10px)}
 .card h2{font-size:14px;font-weight:650;margin-bottom:12px;color:var(--fg)}
 .card h2 .hint{font-weight:400;font-size:12px;color:var(--fg2);margin-left:8px}
 .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:16px;align-items:start}
@@ -174,6 +192,67 @@ textarea.cfg{
 .small{font-size:12px}
 .dangerzone{border-color:color-mix(in srgb,var(--bad) 40%,var(--bd))}
 button.danger{background:var(--bad);color:#fff;border-color:transparent}
+/* Dashboard: device faceplate, stat tiles, live chart */
+.devhead{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:14px}
+.devhead b{font-size:16px}
+.devhead .mut{font-size:12px}
+.face{
+  display:flex;align-items:flex-end;gap:8px;padding:14px 18px 10px;border-radius:10px;width:max-content;max-width:100%;
+  background:linear-gradient(var(--face,#2b2e33),var(--face2,#1d1f23));overflow-x:auto;
+}
+.face .grp{display:flex;gap:8px}
+.face .gap{width:22px;flex:none}
+#strip .port{
+  width:44px;border:0;border-radius:4px;padding:0;background:none;flex:none;color:#c9ccd1;
+}
+#strip .port .jack{
+  width:38px;height:30px;margin:0 auto;border:0;border-radius:3px;opacity:1;position:relative;
+  background:#0b0c0e;box-shadow:inset 0 0 0 2px #45484e;
+}
+#strip .port .jack:before{content:"";position:absolute;left:12px;right:12px;bottom:4px;height:6px;background:#45484e;border-radius:1px}
+#strip .port.sfp{width:58px}
+#strip .port.sfp .jack{width:52px;height:20px;margin-bottom:5px}
+#strip .port.sfp .jack:before{left:4px;right:4px;bottom:6px;height:3px}
+#strip .port .led{display:block;width:6px;height:6px;border-radius:50%;margin:5px auto 3px;background:#3a3d42}
+#strip .port .pn{display:block;font-size:12px;font-weight:600;color:#c9ccd1}
+#strip .port .ps{font-size:10px;color:#8b9098;min-height:11px}
+#strip .port.up .jack{box-shadow:inset 0 0 0 2px var(--pc)}
+#strip .port.up .led{background:var(--pc);box-shadow:0 0 6px var(--pc)}
+#strip .port.up .ps{color:var(--pc)}
+#strip .port.dis{opacity:.4;border:0}
+#strip .port.cur .jack{outline:2px solid #fff;outline-offset:2px}
+#strip .port:hover .jack{filter:brightness(1.4)}
+.legend{display:flex;gap:12px;flex-wrap:wrap;font-size:11px;color:var(--fg2);margin-top:10px}
+.legend i{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px;vertical-align:0}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:16px;margin-bottom:16px}
+.tile{background:var(--panel);border:1px solid var(--bd);border-radius:var(--rad,10px);box-shadow:var(--shadow);padding:12px 16px}
+:root[data-theme^="uni"] .tile{border-color:transparent}
+.tile .k{font-size:12px;color:var(--fg2)}
+.tile .v{font-size:22px;font-weight:650;font-variant-numeric:tabular-nums;margin-top:2px}
+.tile .v small{font-size:12px;font-weight:500;color:var(--fg2);margin-left:3px}
+#tchart{width:100%;height:110px;display:block}
+#tchart .tx{stroke:var(--ac);fill:none;stroke-width:2}
+#tchart .rx{stroke:var(--ok);fill:none;stroke-width:2}
+#tchart .ax{stroke:var(--bd)}
+/* Port drawer */
+#dback{position:fixed;inset:0;background:rgba(0,0,0,.3);z-index:35;display:none}
+#dback.show{display:block}
+#drawer{
+  position:fixed;top:0;right:0;bottom:0;width:min(420px,100vw);background:var(--panel);z-index:36;
+  box-shadow:-4px 0 24px rgba(0,0,0,.18);transform:translateX(105%);transition:transform .2s;
+  display:flex;flex-direction:column;
+}
+#drawer.show{transform:none}
+#dhead{display:flex;align-items:center;gap:10px;padding:14px 18px;border-bottom:1px solid var(--bd)}
+#dtitle{font-weight:650;font-size:15px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#dx{background:none;border:0;font-size:19px;cursor:pointer;color:var(--fg2)}
+#dbody{padding:6px 18px 24px;overflow:auto;flex:1}
+#dbody h3{font-size:12px;font-weight:650;text-transform:uppercase;letter-spacing:.04em;color:var(--fg2);margin:18px 0 8px}
+#dbody .vlist{display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:4px 10px;margin:6px 0}
+#dbody .vlist label{display:flex;gap:6px;align-items:center;font-size:13px}
+#dbody .tg{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--fg2);margin:12px 0 4px}
+#dbody .tg span{flex:1}
+#dbody .acts{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
 @media (max-width:820px){
   #nav{position:fixed;left:-210px;transition:left .18s;z-index:30;box-shadow:var(--shadow)}
   #nav.open{left:0}
@@ -192,6 +271,7 @@ button.danger{background:var(--bad);color:#fff;border-color:transparent}
   var t=pref;
   if(pref==="auto")t=dark?"dark":"light";
   if(pref==="auto-sel")t=dark?"sel-dark":"sel-light";
+  if(pref==="auto-uni")t=dark?"uni-dark":"uni-light";
   document.documentElement.dataset.theme=t;
 })();
 </script>
@@ -221,8 +301,21 @@ button.danger{background:var(--bad);color:#fff;border-color:transparent}
 
   <main>
     <section class="tab act" id="tab-dash">
-      <div class="card"><h2><span data-i18n="d_ports">Ports</span> <span class="hint" data-i18n="d_ports_h">click a port for details</span></h2>
-        <div id="strip"></div>
+      <div class="card">
+        <div class="devhead"><b id="dvname">Switch</b><span class="mut" id="dvsub"></span></div>
+        <div class="face" id="strip"></div>
+        <div class="legend" id="legend"></div>
+      </div>
+      <div class="tiles">
+        <div class="tile"><div class="k" data-i18n="d_t_ports">Ports up</div><div class="v" id="dtup">-</div></div>
+        <div class="tile"><div class="k" data-i18n="d_t_tx">TX total</div><div class="v" id="dttx">-</div></div>
+        <div class="tile"><div class="k" data-i18n="d_t_rx">RX total</div><div class="v" id="dtrx">-</div></div>
+        <div class="tile"><div class="k" data-i18n="d_t_err">Errors</div><div class="v" id="dterr">-</div></div>
+        <div class="tile"><div class="k" data-i18n="i_temp">Temperature</div><div class="v" id="dttemp">-</div></div>
+      </div>
+      <div class="card"><h2><span data-i18n="d_chart">Throughput</span> <span class="hint" data-i18n="d_chart_h">packets/s, all ports, last 5 minutes</span></h2>
+        <svg id="tchart" viewBox="0 0 600 110" preserveAspectRatio="none"><path class="ax" d="M0 109.5H600"/><path class="tx" id="tctx"/><path class="rx" id="tcrx"/></svg>
+        <div class="legend"><span><i style="background:var(--ac)"></i>TX</span><span><i style="background:var(--ok)"></i>RX</span><span id="tcmax"></span></div>
       </div>
       <div class="grid2">
         <div class="card"><h2 data-i18n="d_system">System</h2><table class="t" id="sysinfo"></table></div>
@@ -464,6 +557,9 @@ button.danger{background:var(--bad);color:#fff;border-color:transparent}
               <option value="dark" data-i18n="th_dark">Dark</option>
               <option value="sel-light" data-i18n="th_sel_light">Selenized Light</option>
               <option value="sel-dark" data-i18n="th_sel_dark">Selenized Dark</option>
+              <option value="auto-uni" data-i18n="th_auto_uni">System (UniFi style)</option>
+              <option value="uni-light" data-i18n="th_uni_light">UniFi style Light</option>
+              <option value="uni-dark" data-i18n="th_uni_dark">UniFi style Dark</option>
             </select></label>
           <p class="small mut" data-i18n="sy_display_note">Stored in this browser only.</p>
         </div>
@@ -502,6 +598,9 @@ button.danger{background:var(--bad);color:#fff;border-color:transparent}
   <div id="mhead"><span id="mtitle"></span><button id="mx">&#x2715;</button></div>
   <div id="mbody"></div><div id="mfoot"></div>
 </div></div>
+
+<div id="dback"></div>
+<aside id="drawer"><div id="dhead"><span id="dtitle"></span><button id="dx">&#x2715;</button></div><div id="dbody"></div></aside>
 
 <script src="/app.js"></script>
 </body>
