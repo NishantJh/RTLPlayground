@@ -55,6 +55,7 @@ extern __xdata struct bridge stp_dbridge[STP_ENTITIES];
 extern __xdata uint16_t stp_dpid[STP_ENTITIES];
 extern __xdata uint32_t stp_dcost[STP_ENTITIES];
 extern __xdata uint16_t stp_bpdu_age[STP_ENTITIES];	/* ticks since a BPDU was heard */
+extern __xdata uint8_t  stp_alt[STP_ENTITIES];	/* alternate port (blocked, better path to the root exists) */
 
 extern __xdata struct bridge root_bridge;
 extern __xdata uint32_t root_bridge_cost;
