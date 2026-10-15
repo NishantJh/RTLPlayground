@@ -8,6 +8,14 @@ hdr_dirty:"unsaved changes",hdr_dirty_t:"Running config differs from startup con
 hdr_save:"Save to flash",hdr_save_t:"Persist running configuration to flash",
 th_auto:"System",th_auto_sel:"System (Selenized)",sy_display:"Display",sy_theme:"Theme",sy_display_note:"Stored in this browser only.",th_light:"Light",th_dark:"Dark",
 th_sel_light:"Selenized Light",th_sel_dark:"Selenized Dark",
+th_auto_uni:"System (UniFi style)",th_uni_light:"UniFi style Light",th_uni_dark:"UniFi style Dark",
+d_t_ports:"Ports up",d_t_tx:"TX total",d_t_rx:"RX total",d_t_err:"Errors",d_chart:"Throughput",
+d_chart_h:"packets/s, all ports, last 5 minutes",d_peak:"peak {v} pps",
+dr_overview:"Overview",dr_settings:"Settings",dr_vlans:"VLANs",dr_native:"Native VLAN",dr_tagged:"Tagged VLANs",
+dr_all:"All",dr_none:"None",dr_lag:"Port {p} is in LAG {n}: VLAN changes apply to all its members ({m}).",
+dr_note:"Changes go to the running config. Use Save to flash to keep them; a power cycle restores the saved config.",
+dr_kept:"VLAN {v} would be left without members and was not changed",dr_nochange:"Nothing to change",
+
 c_port:"Port",c_name:"Name",c_link:"Link",c_apply:"Apply",c_cancel:"Cancel",c_confirm:"Confirm",
 c_close:"Close",c_refresh:"Refresh",c_off:"off",c_offc:"Off",c_down:"down",c_on:"On",c_auto:"Auto",c_delete:"Delete",
 c_type:"Type",c_state:"State",c_enabled:"Enabled",c_load:"Load",c_disable:"Disable",c_sfp:"SFP",
@@ -759,6 +767,7 @@ function applyTheme(){
   var th=pref;
   if(pref==="auto")th=dark?"dark":"light";
   if(pref==="auto-sel")th=dark?"sel-dark":"sel-light";
+  if(pref==="auto-uni")th=dark?"uni-dark":"uni-light";
   document.documentElement.dataset.theme=th;
   $("themeSel").value=pref;
 }
@@ -976,16 +985,26 @@ function fmtPps(v){
 }
 function portLabel(p){return p.name?p.portNum+" "+p.name:String(p.portNum)}
 
+/* Front panel: copper jacks in one group, SFP cages in another. */
 function buildStrip(){
-  var st=$("strip");st.innerHTML="";
+  var st=$("strip"),grp=null,sfp=null;st.innerHTML="";
   for(var i=0;i<S.n;i++)(function(i){
     var p=S.ports[i]||{};
-    st.appendChild(h("div",{class:"port"+(p.isSFP?" sfp":""),id:"pp"+i,onclick:function(){portDetail(i)}},[
-      h("span",{class:"pn",text:String(i+1)}),
+    if(!grp||!!p.isSFP!==sfp){
+      if(grp)st.appendChild(h("span",{class:"gap"}));
+      grp=h("div",{class:"grp"});st.appendChild(grp);sfp=!!p.isSFP;
+    }
+    grp.appendChild(h("div",{class:"port"+(p.isSFP?" sfp":""),id:"pp"+i,onclick:function(){portDetail(i)}},[
+      h("i",{class:"led"}),
       h("i",{class:"jack"}),
+      h("span",{class:"pn",text:String(i+1)}),
       h("span",{class:"ps",id:"ppl"+i,text:"..."}),
     ]));
   })(i);
+  var lg=$("legend");lg.innerHTML="";
+  [["2.5G","--s2g5"],["1G","--s1000"],["10/100M","--s100"],["10G","--s10g"]].forEach(function(x){
+    lg.appendChild(h("span",{html:'<i style="background:var('+x[1]+')"></i>'+x[0]}));
+  });
 }
 function updateStrip(){
   S.ports.forEach(function(p){
@@ -998,7 +1017,7 @@ function updateStrip(){
     lb.textContent=!p.enabled?t("c_off"):(p.link>0?LINKS[p.link]:t("c_down"));
     el.title=portRows(p).map(function(r){return r[0]+": "+r[1]}).join("\n");
   });
-  if(S.detail!=null){var b=$("mbody");b.innerHTML="";b.appendChild(detailTable(S.ports[S.detail]));}
+  if(S.detail!=null&&$("dov")){var b=$("dov");b.innerHTML="";b.appendChild(detailTable(S.ports[S.detail]));}
 }
 
 function pU16(v){return parseInt(v,16)&0xffff}
@@ -1060,10 +1079,114 @@ function detailTable(p){
   });
   return tb;
 }
+/* Port drawer: status, quick settings and the port's VLAN profile
+ * (native + tagged VLANs). The profile is applied with the same
+ * "vlan"/"pvid" commands as the VLAN page, to every member of the
+ * port's LAG so the trunk stays consistent. */
 function portDetail(i){
-  if(!S.ports[i])return;
-  modal(t("c_port")+" "+(i+1),detailTable(S.ports[i]));
+  var p=S.ports[i];
+  if(!p)return;
   S.detail=i;
+  document.querySelectorAll("#strip .port").forEach(function(e){e.classList.toggle("cur",e.id==="pp"+i)});
+  $("dtitle").textContent=t("c_port")+" "+portLabel(p);
+  var b=$("dbody");b.innerHTML="";
+  b.appendChild(h("h3",{text:t("dr_overview")}));
+  var ov=h("div",{id:"dov"});ov.appendChild(detailTable(p));b.appendChild(ov);
+  b.appendChild(h("h3",{text:t("dr_settings")}));
+  var en=h("input",{type:"checkbox"});en.checked=!!p.enabled;
+  var nm=h("input",{class:"in",value:p.name||"",maxlength:"15"});
+  b.appendChild(h("label",{class:"row"},[h("span",{class:"lb",text:t("c_enabled")}),h("span",{class:"switch"},[en,h("i")])]));
+  b.appendChild(h("label",{class:"row"},[h("span",{class:"lb",text:t("c_name")}),nm]));
+  b.appendChild(h("div",{class:"acts"},[h("button",{class:"ctl pri",text:t("c_apply"),onclick:function(){
+    var cmds=[],name=nm.value.trim();
+    if(en.checked!==!!p.enabled)cmds.push("port "+(i+1)+(en.checked?" on":" off"));
+    if(name&&name!==(p.name||"")){
+      if(!/^\S{1,15}$/.test(name)){toast(t("pt_name_err"),"err");return;}
+      cmds.push("port "+(i+1)+" name "+name);
+    }
+    if(!cmds.length){toast(t("dr_nochange"));return;}
+    postCmds(cmds).then(pollStatus).catch(function(){});
+  }})]));
+  b.appendChild(h("h3",{text:t("dr_vlans")}));
+  var vb=h("div",{text:"..."});b.appendChild(vb);
+  b.appendChild(h("p",{class:"small mut",style:"margin-top:14px",text:t("dr_note")}));
+  $("drawer").classList.add("show");$("dback").classList.add("show");
+  drawerVlans(i,vb);
+}
+function closeDrawer(){
+  S.detail=null;
+  $("drawer").classList.remove("show");$("dback").classList.remove("show");
+  document.querySelectorAll("#strip .port.cur").forEach(function(e){e.classList.remove("cur")});
+}
+$("dx").addEventListener("click",closeDrawer);
+$("dback").addEventListener("click",closeDrawer);
+addEventListener("keydown",function(e){if(e.key==="Escape"&&S.detail!=null)closeDrawer()});
+function drawerVlans(i,box){
+  var vl=[],lagMask=0;
+  getJSON("/vlanlist").then(function(d){
+    var p=Promise.resolve();
+    (d.vlan||[]).forEach(function(v){
+      p=p.then(function(){return getJSON("/vlan.json?vid="+v.id)}).then(function(x){
+        var m=parseInt(x.members,16);
+        vl.push({id:v.id,name:v.name||"",mem:m&0x3ff,unt:((m>>10)&0x3ff)&m&0x3ff,pv:parseInt(x.pvid,16)&0x3ff});
+      });
+    });
+    return p;
+  }).then(function(){return getJSON("/lag.json").catch(function(){return[]})}).then(function(lags){
+    if(S.detail!==i)return;
+    var bit=S.physToLog[i],lagNum=0;
+    lags.forEach(function(l){var m=parseInt(l.members,2);if((m>>bit)&1){lagMask=m;lagNum=l.lagNum+1}});
+    box.innerHTML="";
+    var nat=h("select",{class:"in"});
+    nat.appendChild(h("option",{value:"0",text:"-"}));
+    var cur=0,chk={};
+    vl.forEach(function(v){
+      var o=h("option",{value:String(v.id),text:v.id+(v.name?" "+v.name:"")});
+      if((v.pv>>bit)&1){o.selected=true;cur=v.id}
+      nat.appendChild(o);
+    });
+    box.appendChild(h("label",{class:"row"},[h("span",{class:"lb",text:t("dr_native")}),nat]));
+    var list=h("div",{class:"vlist"});
+    vl.forEach(function(v){
+      var c=h("input",{type:"checkbox"});
+      c.checked=!!((v.mem>>bit)&1)&&!((v.unt>>bit)&1);
+      chk[v.id]=c;
+      list.appendChild(h("label",null,[c,h("span",{text:v.id+(v.name?" "+v.name:"")})]));
+    });
+    function all(on){vl.forEach(function(v){chk[v.id].checked=on&&String(v.id)!==nat.value})}
+    nat.addEventListener("change",function(){if(chk[nat.value])chk[nat.value].checked=false});
+    box.appendChild(h("div",{class:"tg"},[h("span",{text:t("dr_tagged")}),
+      h("button",{class:"ctl",text:t("dr_all"),onclick:function(){all(true)}}),
+      h("button",{class:"ctl",text:t("dr_none"),onclick:function(){all(false)}})]));
+    box.appendChild(list);
+    var targets=lagMask?maskToPorts(lagMask):[i+1];
+    if(lagMask)box.appendChild(h("p",{class:"small",style:"color:var(--warn)",text:t("dr_lag",{p:i+1,n:lagNum,m:targets.join(" ")})}));
+    box.appendChild(h("div",{class:"acts"},[h("button",{class:"ctl pri",text:t("c_apply"),onclick:function(){
+      var cmds=vlanProfileCmds(vl,targets,parseInt(nat.value,10),function(id){return chk[id].checked});
+      if(!cmds.length){toast(t("dr_nochange"));return;}
+      postCmds(cmds).then(function(){if(S.detail===i)drawerVlans(i,box)}).catch(function(){});
+    }})]));
+  }).catch(function(){box.textContent="-"});
+}
+function vlanProfileCmds(vl,targets,native,isTagged){
+  var cmds=[],pv=[],tm=0;
+  targets.forEach(function(p){tm|=1<<S.physToLog[p-1]});
+  vl.forEach(function(v){
+    var mem=v.mem&~tm,unt=v.unt&~tm;
+    if(!native){mem|=v.unt&tm;unt|=v.unt&tm}
+    if(v.id===native){mem|=tm;unt|=tm}
+    else if(isTagged(v.id))mem|=tm;
+    if(mem===v.mem&&unt===v.unt)return;
+    if(!mem){toast(t("dr_kept",{v:v.id}),"err");return;}
+    var c="vlan "+v.id+(v.name?" "+v.name:"");
+    maskToPorts(mem).forEach(function(p){c+=" "+p+(((unt>>S.physToLog[p-1])&1)?"":"t")});
+    cmds.push(c);
+  });
+  if(native)targets.forEach(function(p){
+    var bit=S.physToLog[p-1];
+    vl.forEach(function(v){if(v.id===native&&!((v.pv>>bit)&1))pv.push("pvid "+p+" "+native)});
+  });
+  return cmds.concat(pv);
 }
 
 function renderInfo(){
@@ -1082,11 +1205,39 @@ function renderInfo(){
     try{localStorage.setItem("rtl_host",S.info.hostname);}catch(e){}
   }
   if(S.info.sw_ver)$("fver").textContent="RTLPlayground "+S.info.sw_ver;
+  $("dvname").textContent=S.info.hostname||"Switch";
+  $("dvsub").textContent=[S.info.hw_ver,S.info.ip_address,S.info.mac_address,S.info.sw_ver].filter(Boolean).join("  \u00b7  ");
+  if(S.info.chip_temp)$("dttemp").innerHTML=esc(S.info.chip_temp)+"<small>\u00b0C</small>";
 }
 function pollInfo(){
   return getJSON("/information.json").then(function(j){S.info=j;renderInfo()});
 }
+var hist=[];
+function dashTiles(){
+  var up=0,tx=0,rx=0,err=0n,have=false;
+  S.ports.forEach(function(p){
+    if(p.enabled&&p.link>0)up++;
+    err+=BigInt(p.txB)+BigInt(p.rxB);
+    var r=S.rates[p.portNum-1];
+    if(r){tx+=r.tx;rx+=r.rx;have=true}
+  });
+  $("dtup").innerHTML=up+"<small>/ "+S.n+"</small>";
+  $("dttx").innerHTML=have?esc(fmtPps(tx))+"<small>pps</small>":"-";
+  $("dtrx").innerHTML=have?esc(fmtPps(rx))+"<small>pps</small>":"-";
+  $("dterr").textContent=err.toString();
+  if(!have)return;
+  hist.push([tx,rx]);
+  if(hist.length>120)hist.shift();
+  var mx=1;hist.forEach(function(x){mx=Math.max(mx,x[0],x[1])});
+  [0,1].forEach(function(k){
+    var d="";
+    hist.forEach(function(x,j){d+=(j?"L":"M")+(600-(hist.length-1-j)*600/119).toFixed(1)+" "+(108-x[k]/mx*100).toFixed(1)});
+    $(k?"tcrx":"tctx").setAttribute("d",d);
+  });
+  $("tcmax").textContent=t("d_peak",{v:fmtPps(mx)});
+}
 function dashStatus(){
+  dashTiles();
   var tb=$("traffic").tBodies[0];
   if(tb.rows.length!==S.n){
     tb.innerHTML="";
