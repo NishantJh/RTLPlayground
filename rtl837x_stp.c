@@ -77,6 +77,7 @@ __xdata uint8_t  stp_st_of;
 __xdata uint16_t port_timers[STP_ENTITIES];	/* listen-period countdown (0 = not listening) */
 __xdata uint16_t port_hello[STP_ENTITIES];	/* hello TX countdown */
 __xdata uint16_t stp_bpdu_age[STP_ENTITIES];	/* ticks since last BPDU seen on port (saturating) */
+__xdata uint8_t  stp_alt[STP_ENTITIES];	/* alternate port: blocked, hears a better path to the root than it could offer */
 __xdata uint8_t  stp_loop_held[STP_ENTITIES];	/* port is out of forwarding because a loop was seen on it */
 __xdata uint8_t  stp_tx_budget[STP_ENTITIES];	/* tx hold: BPDUs left in the current second */
 __xdata uint8_t  stp_tx_count[STP_ENTITIES];	/* BPDUs actually put on the wire, wraps at 256 */
@@ -390,6 +391,10 @@ static void stp_ent_apply(uint8_t e) __reentrant
 		stp_state_set(e, STP_ST_DISABLED);
 		return;
 	}
+	if (stp_alt[e]) {
+		stp_state_set(e, STP_ST_BLOCKING);
+		return;
+	}
 	if (stp_pflags[e] & STP_PF_ADMEDGE) {
 		stp_pflags[e] |= STP_PF_OPEREDGE;
 		stp_state_set(e, STP_ST_FORWARDING);
@@ -453,6 +458,22 @@ static void stp_claim_root(void)
 	root_bridge_cost = 0;
 	stp_root_port = 0xff;
 	stp_msg_age = 0;
+}
+
+
+/* Is the information just recorded for `port` at least as good as what we
+ * would announce there ourselves? Same root, a lower cost to it, or the same
+ * cost from a bridge with the lower Bridge ID. Our own BPDUs never get here
+ * (the loop check in stp_in() catches them). */
+static uint8_t stp_heard_superior(uint8_t port) __reentrant
+{
+	if (stp_dcost[port] != root_bridge_cost)
+		return stp_dcost[port] < root_bridge_cost;
+	if (stp_dbridge[port].prio != stp_prio)
+		return stp_dbridge[port].prio < stp_prio;
+	if (stp_dbridge[port].ext)
+		return 0;
+	return cmpBytes(stp_dbridge[port].mac, uip_ethaddr.addr, 6) < 0;
 }
 
 
@@ -699,6 +720,25 @@ void stp_in(void) __banked
 		stp_msg_age = (STP_I->age > 254) ? 254 : (uint8_t)STP_I->age;
 		root_bridge_cost = stp_dcost[port] + PCOST(port);
 	}
+
+	/* Alternate port: a second path to the same root that is not our root
+	 * port and is at least as good as what we would offer there. Forwarding
+	 * on it would close a loop, so block it until the root port is lost. */
+	if (port != stp_root_port
+	    && cmpBytes((__xdata uint8_t *)&STP_I->root, (__xdata uint8_t *)&root_bridge, 8) == 0
+	    && stp_heard_superior(port)) {
+		if (!stp_alt[port]) {
+			stp_alt[port] = 1;
+			port_timers[port] = 0;
+			stp_pflags[port] &= ~STP_PF_OPEREDGE;
+			stp_state_set(port, STP_ST_BLOCKING);
+		}
+	} else if (stp_alt[port]) {
+		/* No longer alternate (it became the root port, or the info got
+		 * worse): run the listen period again before forwarding. */
+		stp_alt[port] = 0;
+		port_timers[port] = (uint16_t)stp_fwddelay_s * STP_HZ;
+	}
 }
 
 
@@ -718,6 +758,7 @@ void stp_timers(void) __banked
 					continue;
 				if (stp_ent_of[stp_i] != stp_i) {
 					stp_loop_held[stp_i] = 0;
+					stp_alt[stp_i] = 0;
 					port_timers[stp_i] = 0;
 				} else {
 					stp_ent_apply(stp_i);
@@ -729,6 +770,7 @@ void stp_timers(void) __banked
 				} else {
 					stp_pflags[stp_i] &= ~(STP_PF_OPEREDGE | STP_PF_TRIPPED);
 					stp_loop_held[stp_i] = 0;
+					stp_alt[stp_i] = 0;
 					port_timers[stp_i] = 0;
 				}
 			}
@@ -798,8 +840,15 @@ void stp_timers(void) __banked
 			 * where our own root information comes FROM, and echoing it back
 			 * there just feeds the upstream bridge its own data (and looks
 			 * like a competing designated bridge on that segment). */
-			if (stp_i != stp_root_port)
+			if (stp_i != stp_root_port && !stp_alt[stp_i])
 				stp_cnf_send(stp_i);
+		}
+
+		/* An alternate port that stopped hearing a better path is a plain
+		 * designated port again, after a listen period. */
+		if (stp_alt[stp_i] && stp_bpdu_age[stp_i] > (uint16_t)stp_maxage_s * STP_HZ) {
+			stp_alt[stp_i] = 0;
+			port_timers[stp_i] = (uint16_t)stp_fwddelay_s * STP_HZ;
 		}
 
 		/* Promote a port out of blocking once its listen period expires
@@ -832,8 +881,23 @@ void stp_timers(void) __banked
 	/* Age out a root that went silent: reclaim the tree. */
 	if (stp_root_port != 0xff
 	    && stp_bpdu_age[stp_root_port] > (uint16_t)stp_maxage_s * STP_HZ) {
-		print_string("STP: root aged out, claiming root\n");
-		stp_claim_root();
+		/* Fail over to an alternate port that still hears the root, if any */
+		for (stp_i = 0; stp_i < STP_ENTITIES; stp_i++)
+			if (stp_alt[stp_i] && stp_ent_active(stp_i)
+			    && stp_bpdu_age[stp_i] <= (uint16_t)stp_maxage_s * STP_HZ)
+				break;
+		if (stp_i < STP_ENTITIES) {
+			print_string("STP: root port lost, alternate port takes over\n");
+			stp_alt[stp_i] = 0;
+			stp_root_port = stp_i;
+			root_bridge_cost = stp_dcost[stp_i] + PCOST(stp_i);
+			port_timers[stp_i] = 0;
+			stp_state_set(stp_i, STP_ST_FORWARDING);
+			stp_topology_change(stp_i);
+		} else {
+			print_string("STP: root aged out, claiming root\n");
+			stp_claim_root();
+		}
 		stp_tc_count++;
 	}
 }
@@ -858,6 +922,7 @@ void stp_defaults(void) __banked
 		/* enabled, auto-edge on: host-facing ports go forwarding after
 		 * 3 s of BPDU silence instead of the full forward delay */
 		stp_pflags[stp_i] = STP_PF_ENABLED | STP_PF_AUTOEDGE;
+		stp_alt[stp_i] = 0;
 		stp_pcost[stp_i] = 0;	/* auto */
 		stp_pprio[stp_i] = 0x80;
 		stp_bpdu_age[stp_i] = 0;
@@ -905,6 +970,7 @@ void stp_setup(void) __banked
 	for (stp_i = 0; stp_i < STP_ENTITIES; stp_i++) {
 		stp_pflags[stp_i] &= ~(STP_PF_OPEREDGE | STP_PF_TRIPPED);
 		stp_loop_held[stp_i] = 0;
+		stp_alt[stp_i] = 0;
 		stp_bpdu_age[stp_i] = 0;
 		stp_tx_budget[stp_i] = stp_txhold;
 		stp_tx_count[stp_i] = 0;
@@ -960,6 +1026,7 @@ void stp_off(void) __banked
 	for (stp_i = 0; stp_i < STP_ENTITIES; stp_i++) {
 		stp_pflags[stp_i] &= ~(STP_PF_OPEREDGE | STP_PF_TRIPPED);
 		stp_loop_held[stp_i] = 0;
+		stp_alt[stp_i] = 0;
 		port_timers[stp_i] = 0;
 	}
 	sfr_data[1] |= 0x0c; // Do not block the CPU port (bits 3:2 of byte 1 = port 9)
