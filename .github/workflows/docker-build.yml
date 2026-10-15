@@ -14,7 +14,7 @@ jobs:
     runs-on: [self-hosted, windows]
     defaults:
       run:
-        shell: bash
+        shell: 'C:\Program Files\Git\bin\bash.exe --noprofile --norc -e -o pipefail {0}'
     env:
       MACHINE: SWTG018AS_A_V_2_0
     steps:
