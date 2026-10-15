@@ -30,9 +30,14 @@ and a difference would make the behaviour depend on that choice:
   port isolation
 * may differ: EEE, LED configuration, counters, cable diagnostics
 
-None of this is enforced yet — `port_lag_members_set()` writes a member mask and
-a hash setting and validates nothing. See #377 for the discussion of whether a
-mismatch should be rejected or applied to the whole group.
+LACP enforces the speed: the first port that hears the partner fixes the speed of
+the aggregator, and a port that links up at another speed is not selected, so it
+stays out of the trunk until it matches again. The speed is read from the link
+register once a second, and `lacp show` lists it per port. Duplex is not read
+yet, and none of the other settings are checked. A static trunk validates
+nothing: `port_lag_members_set()` writes a member mask and a hash setting. See
+#377 for the discussion of whether a mismatch should be rejected or applied to
+the whole group.
 
 ## Protocol timing
 
@@ -43,13 +48,14 @@ of the system clock, 50 times per second:
 |----------------------|-------|------|
 | `LACP_FAST_PERIODIC` | 50    | 1 s  |
 | `LACP_SLOW_PERIODIC` | 1500  | 30 s |
-| `LACP_SHORT_TIMEOUT` | 200   | 4 s  |
+| `LACP_SHORT_TIMEOUT` | 150   | 3 s  |
+| `LACP_CHURN_TIME`    | 3000  | 60 s |
 
 802.3ad specifies a fast periodic time of 1 s with a short timeout of 3 s, and a
 slow periodic time of 30 s with a long timeout of 90 s. The switch transmits at
 the rate the partner asks for with its TIMEOUT bit. Its own timeout is always
-the short one, one second above the standard, so a partner that stops sending
-while its link stays up leaves the trunk after 4 s.
+the short one, as in the standard, so a partner that stops sending while its
+link stays up leaves the trunk after 3 s.
 
 The Partner block of a transmitted LACPDU repeats the partner's actor
 information as it was last received: system priority, system, key, port
@@ -147,9 +153,11 @@ slave rejoins after it comes back.
 
 ## Known limits
 
-* No Churn Detection machines and no Marker protocol.
-* Coupled Mux: collecting and distributing are enabled together.
 * One aggregator per group.
-* Selection compares the partner's system only, not its key: two aggregates
-  that one partner system offers on the same group land in one trunk here.
-* Member compatibility is not validated; see #377.
+* Churn detection only sets a flag per port (`lacp show`); nothing reacts to it.
+* The Marker protocol answers every Marker PDU at once, which is right while the
+  switch keeps no frames in flight on a link; it never sends Marker PDUs itself.
+* Collecting follows the partner's SYNC and distributing its COLLECTING, but the
+  trunk register is one member mask, so a port that collects only is not in the
+  trunk yet.
+* Member compatibility covers the speed only; see #377 for the rest.

@@ -842,6 +842,25 @@ uint8_t port_lag_of(uint8_t port) __banked
  * The bitmask represents up to 10 ports
  * If currently no LAG has algorithm used, a default is applied
  */
+/*
+ * Link speed code of a port (the nibble of RTL837X_REG_LINKS: 0 10M, 1 100M, 2 1G,
+ * 4 10G, 5 2.5G, 6 5G), or 0xff while there is no link.
+ * Duplex is not decoded here: the chip only offers full duplex from 1G up, and the
+ * register layout for half duplex at 10/100M is not known yet.
+ */
+uint8_t port_link_speed(__xdata uint8_t port) __banked
+{
+	uint8_t b;
+
+	reg_read_m(RTL837X_REG_LINKS_STS);
+	if (!((sfr_data[(port / 8) + 1] >> (port % 8)) & 1))
+		return 0xff;
+	reg_read_m(port < 8 ? RTL837X_REG_LINKS : RTL837X_REG_LINKS_89);
+	b = sfr_data[3 - ((port & 7) >> 1)];
+	return (port & 1) ? b >> 4 : b & 0xf;
+}
+
+
 void port_lag_members_set(__xdata uint8_t lag, __xdata uint16_t members) __banked
 {
 	print_string("port_lag_members_set, lag: "); print_byte(lag); print_string(", members: "); print_short(members);

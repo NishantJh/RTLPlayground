@@ -12,8 +12,17 @@
 
 ## Changed
 
+- LACP
+  - The short timeout is the 3 s of the standard, was 4 s.
+
 ## Fixed
 
+- LACP
+  - Selection compares the partner key as well as the partner system, so two aggregates of one partner no longer share a trunk.
+  - Collecting and distributing are decoupled: a port distributes, and joins the trunk, only once the partner collects.
+  - Marker PDUs are answered with a Marker Response.
+  - Churn detection flags a port that stays out of sync for 60 s (`lacp show`).
+  - Members of a group must run at the same speed; a port at another speed stays out of the trunk. #377
 - Config
   - A startup configuration line longer than the command buffer no longer stops the replay:
     the offending line is skipped and the following lines are still applied.
