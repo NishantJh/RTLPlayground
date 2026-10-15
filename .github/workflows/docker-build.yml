@@ -12,15 +12,9 @@ jobs:
     # Self-hosted runner on a personal PC: never run code from fork PRs.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, windows]
-    defaults:
-      run:
-        shell: bash
     env:
       MACHINE: SWTG018AS_A_V_2_0
     steps:
-      - name: Use Git Bash (not WSL bash) for the bash steps
-        shell: powershell
-        run: Add-Content -Path $env:GITHUB_PATH -Value 'C:\Program Files\Git\bin'
       - run: git config --global core.autocrlf false
       - uses: actions/checkout@v4
         with:
@@ -31,8 +25,8 @@ jobs:
 
       - name: Build firmware
         run: |
-          docker run --rm -v "$GITHUB_WORKSPACE:/workspace" rtlplayground-dev make MACHINE=$MACHINE
-          ls -l output/$MACHINE/*.bin
+          docker run --rm -v "${env:GITHUB_WORKSPACE}:/workspace" rtlplayground-dev make MACHINE=$env:MACHINE
+          Get-ChildItem output/$env:MACHINE/*.bin
 
       - name: Upload image
         uses: actions/upload-artifact@v4

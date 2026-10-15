@@ -10,14 +10,8 @@ jobs:
     # Self-hosted runner on a personal PC: never run code from fork PRs.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, windows]
-    defaults:
-      run:
-        shell: bash
     steps:
       # Keep LF line endings: the tree is bind-mounted into a Linux container.
-      - name: Use Git Bash (not WSL bash) for the bash steps
-        shell: powershell
-        run: Add-Content -Path $env:GITHUB_PATH -Value 'C:\Program Files\Git\bin'
       - run: git config --global core.autocrlf false
       - uses: actions/checkout@v6
 
@@ -25,11 +19,10 @@ jobs:
         run: docker build -q -t rtlplayground-dev .
 
       - name: Build and test inside the container
-        run: |
-          docker run --rm -v "$GITHUB_WORKSPACE:/workspace" -w /workspace rtlplayground-dev sh -ec '
-            make -C test
-            make machine_check
-            make CI=1 MACHINE="KP_9000_6XHML_X2"
-            make CI=1 MACHINE="KP_9000_9XHML_X_V3_1"
-            make clean && make CI=1 MACHINE="KP_9000_6XHML_X2" HEALTH=1
-          '
+        run: >
+          docker run --rm -v "${env:GITHUB_WORKSPACE}:/workspace" -w /workspace rtlplayground-dev
+          sh -ec "make -C test
+          && make machine_check
+          && make CI=1 MACHINE=KP_9000_6XHML_X2
+          && make CI=1 MACHINE=KP_9000_9XHML_X_V3_1
+          && make clean && make CI=1 MACHINE=KP_9000_6XHML_X2 HEALTH=1"
