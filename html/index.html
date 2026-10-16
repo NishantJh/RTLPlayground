@@ -262,11 +262,71 @@ button.danger{background:var(--bad);color:#fff;border-color:transparent}
   #ttitle{font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   #dirty{padding:2px 7px}
 }
+/* ---- Layout: icon rail, top bar, roomier cards and controls ---- */
+body{display:block}
+#nav{position:fixed;left:0;top:0;bottom:0;width:64px;z-index:30;overflow:hidden;transition:width .15s,box-shadow .15s;border-right:1px solid var(--bd)}
+#nav:hover{width:216px;box-shadow:4px 0 24px rgba(0,0,0,.15)}
+#brand{padding:16px 0 14px 21px;height:58px}
+#brand span,#navlist li span+span,#navfoot{opacity:0;transition:opacity .12s;white-space:nowrap}
+#nav:hover #brand span,#nav:hover #navlist li span+span,#nav:hover #navfoot{opacity:1}
+#navlist{padding:4px 10px}
+#navlist li{height:40px;padding:0 13px;gap:14px;border-radius:8px;white-space:nowrap}
+#navlist li svg{width:18px;height:18px}
+#navlist li.act{background:var(--sel);color:var(--ac)}
+#wrap{margin-left:64px;min-height:100vh}
+#top{height:58px;padding:0 24px;border-bottom:1px solid var(--bd)}
+#crumb{flex:1;min-width:0;display:flex;align-items:baseline;gap:10px;white-space:nowrap;overflow:hidden}
+#tdev{font-size:16px;font-weight:650}
+#ttitle{flex:none;font-size:14px;font-weight:500;color:var(--fg2)}
+#ttitle:before{content:"/";margin-right:10px;color:var(--bd)}
+#dirty{border-radius:6px}
+main{padding:24px 28px 48px;max-width:1440px;margin:0 auto}
+.card{padding:20px 22px;margin-bottom:20px}
+.card h2{font-size:15px;margin-bottom:14px}
+.grid2,.tiles{gap:20px}
+.tiles{margin-bottom:20px}
+table.t th{font-size:11px;text-transform:uppercase;letter-spacing:.04em;padding:8px 10px}
+table.t td{padding:9px 10px;height:44px}
+input.in,select.in,textarea.in{background:var(--panel2);border-color:transparent;border-radius:8px;padding:6px 10px;min-height:32px}
+input.in:focus,select.in:focus{border-color:var(--ac);background:var(--panel)}
+select.ctl,button.ctl{border-radius:8px;padding:6px 14px;min-height:32px;font-weight:500}
+.switch input:checked+i{background:var(--ac)}
+.badge{border-radius:6px;padding:2px 8px}
+.badge.ok{background:color-mix(in srgb,var(--ok) 14%,transparent)}
+.seg{border-radius:8px}
+#facecard{display:none}
+body[data-tab="dash"] #facecard,body[data-tab="ports"] #facecard{display:block}
+#ptable td:first-child a{font-weight:600;cursor:pointer}
+.prof{font-size:12px;white-space:nowrap}
+.prof .vtag{margin-right:4px}
+/* VLAN networks list */
+.net{display:grid;grid-template-columns:44px minmax(140px,1fr) 3fr auto;gap:16px;align-items:center;padding:12px 4px;border-bottom:1px solid var(--bd)}
+.net:last-child{border-bottom:0}
+.vid{width:40px;height:40px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;color:#fff;background:var(--vc)}
+.net .nm b{display:block;font-size:14px}
+.net .nm small{color:var(--fg2);font-size:12px}
+.net .pp{display:flex;flex-direction:column;gap:6px;font-size:12px;color:var(--fg2)}
+.net .pp div{display:flex;align-items:center;gap:4px;flex-wrap:wrap}
+.net .pp div>span:first-child{width:60px}
+.chip{display:inline-flex;align-items:center;justify-content:center;min-width:24px;height:22px;padding:0 6px;border-radius:6px;font-size:12px;font-weight:600;background:var(--panel2);color:var(--fg)}
+.chip.u{background:color-mix(in srgb,var(--vc) 22%,var(--panel2))}
+.vtag{display:inline-block;padding:1px 7px;border-radius:6px;font-size:11px;font-weight:600;color:#fff;background:var(--vc)}
+.net .act{display:flex;gap:8px}
+@media (max-width:820px){
+  #nav,#nav:hover{width:216px;left:-226px;transition:left .18s}
+  #nav.open{left:0}
+  #brand span,#navlist li span+span,#navfoot{opacity:1}
+  #wrap{margin-left:0}
+  #top{padding:0 12px}
+  main{padding:16px 12px 40px}
+  .net{grid-template-columns:40px 1fr;row-gap:8px}
+  .net .pp,.net .act{grid-column:1/-1}
+}
 </style>
 <script>
 (function(){
   var pref;
-  try{pref=localStorage.getItem("theme")||"auto";}catch(e){pref="auto";}
+  try{pref=localStorage.getItem("theme")||"auto-uni";}catch(e){pref="auto-uni";}
   var dark=window.matchMedia("(prefers-color-scheme: dark)").matches;
   var t=pref;
   if(pref==="auto")t=dark?"dark":"light";
@@ -294,18 +354,18 @@ button.danger{background:var(--bad);color:#fff;border-color:transparent}
     <button id="burger" title="Menu">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--fg)" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
     </button>
-    <span id="ttitle"></span>
+    <span id="crumb"><span id="tdev">Switch</span><span id="ttitle"></span></span>
     <span id="dirty" data-i18n="hdr_dirty" data-i18n-t="hdr_dirty_t">unsaved changes</span>
     <button class="ctl pri" id="saveBtn" data-i18n="hdr_save" data-i18n-t="hdr_save_t">Save to flash</button>
   </header>
 
   <main>
+    <div class="card" id="facecard">
+      <div class="devhead"><b id="dvname">Switch</b><span class="mut" id="dvsub"></span></div>
+      <div class="face" id="strip"></div>
+      <div class="legend" id="legend"></div>
+    </div>
     <section class="tab act" id="tab-dash">
-      <div class="card">
-        <div class="devhead"><b id="dvname">Switch</b><span class="mut" id="dvsub"></span></div>
-        <div class="face" id="strip"></div>
-        <div class="legend" id="legend"></div>
-      </div>
       <div class="tiles">
         <div class="tile"><div class="k" data-i18n="d_t_ports">Ports up</div><div class="v" id="dtup">-</div></div>
         <div class="tile"><div class="k" data-i18n="d_t_tx">TX total</div><div class="v" id="dttx">-</div></div>
@@ -330,7 +390,7 @@ button.danger{background:var(--bad);color:#fff;border-color:transparent}
     <section class="tab" id="tab-ports">
       <div class="card"><h2 data-i18n="pt_title">Port configuration</h2>
         <div class="scrollx"><table class="t" id="ptable">
-          <thead><tr><th data-i18n="c_port">Port</th><th data-i18n="c_name">Name</th><th data-i18n="c_link">Link</th><th data-i18n="pt_conn">Connected</th><th data-i18n="pt_speed">Speed</th><th data-i18n="c_enabled">Enabled</th><th data-i18n="pt_mtu">MTU</th><th></th></tr></thead>
+          <thead><tr><th data-i18n="c_port">Port</th><th data-i18n="c_name">Name</th><th data-i18n="c_link">Link</th><th data-i18n="pt_profile">VLANs</th><th data-i18n="pt_conn">Connected</th><th data-i18n="pt_speed">Speed</th><th data-i18n="c_enabled">Enabled</th><th data-i18n="pt_mtu">MTU</th><th></th></tr></thead>
           <tbody></tbody></table></div>
         <p class="small mut" style="margin-top:8px" data-i18n="pt_sfp_note">SFP speed is set per slot and is not saved in the startup config.</p>
       </div>
@@ -375,12 +435,10 @@ button.danger{background:var(--bad);color:#fff;border-color:transparent}
 
     <section class="tab" id="tab-vlan">
       <div class="card"><h2><span data-i18n="v_title">VLANs</span> <span class="hint"><span data-i18n="v_mgmt">Management VLAN</span>: <span id="vmgmtcur">-</span></span></h2>
-        <div class="scrollx"><table class="t" id="vtable">
-          <thead><tr><th data-i18n="v_vid">VID</th><th data-i18n="c_name">Name</th><th data-i18n="v_members">Members</th><th data-i18n="v_tagged">Tagged</th><th data-i18n="v_untagged">Untagged</th><th data-i18n="v_pvid_on">PVID on</th><th></th></tr></thead>
-          <tbody></tbody></table></div>
+        <div id="vnets"></div>
         <p class="small mut" id="vempty" style="display:none;margin-top:6px" data-i18n="v_empty">No VLANs configured.</p>
       </div>
-      <div class="card"><h2 data-i18n="v_editor">VLAN editor</h2>
+      <div class="card" id="veditcard"><h2 data-i18n="v_editor">VLAN editor</h2>
         <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:10px">
           <label><span data-i18n="v_vid">VID</span> <input class="in sm" id="vvid" type="number" min="1" max="4094"></label>
           <label><span data-i18n="c_name">Name</span> <input class="in" id="vname" size="12" maxlength="15" data-i18n-p="v_optional"></label>
@@ -551,16 +609,16 @@ button.danger{background:var(--bad);color:#fff;border-color:transparent}
             </select></label>
           <label class="row"><span class="lb" data-i18n="sy_theme">Theme</span>
             <select class="in" id="themeSel">
+              <option value="auto-uni" data-i18n="th_auto_uni">System (UniFi style)</option>
+              <option value="uni-light" data-i18n="th_uni_light">UniFi style Light</option>
+              <option value="uni-dark" data-i18n="th_uni_dark">UniFi style Dark</option>
               <option value="auto" data-i18n="th_auto">System</option>
               <option value="auto-sel" data-i18n="th_auto_sel">System (Selenized)</option>
               <option value="light" data-i18n="th_light">Light</option>
               <option value="dark" data-i18n="th_dark">Dark</option>
               <option value="sel-light" data-i18n="th_sel_light">Selenized Light</option>
               <option value="sel-dark" data-i18n="th_sel_dark">Selenized Dark</option>
-              <option value="auto-uni" data-i18n="th_auto_uni">System (UniFi style)</option>
-              <option value="uni-light" data-i18n="th_uni_light">UniFi style Light</option>
-              <option value="uni-dark" data-i18n="th_uni_dark">UniFi style Dark</option>
-            </select></label>
+</select></label>
           <p class="small mut" data-i18n="sy_display_note">Stored in this browser only.</p>
         </div>
       </div>
