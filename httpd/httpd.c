@@ -5,6 +5,7 @@
 #include "rtl837x_regs.h"
 #include "cmd_parser.h"
 #include "rtl837x_flash.h"
+#include "machine.h"
 #include "uip.h"
 #include "html_data.h"
 
@@ -467,6 +468,49 @@ static uint16_t preamble_payload_start(uint16_t n)
 }
 
 
+// Board check for firmware uploads: every image carries its machine name as a
+// NUL-terminated string (machine.machine_name), so an image for another board
+// does not contain ours. Matched while streaming, with KMP-style fallback.
+extern __code const struct machine machine;
+__xdata uint8_t fw_name_idx;
+__xdata uint8_t fw_name_found;
+
+static uint8_t fw_name_len(void)
+{
+	uint8_t n = 0;
+	while (n < sizeof(machine.machine_name) && machine.machine_name[n])
+		n++;
+	return n;
+}
+
+void fw_name_step(uint8_t c)
+{
+	uint8_t len = fw_name_len(); // pattern is the name plus its NUL
+	uint8_t k, j;
+
+	if (fw_name_found)
+		return;
+	for (;;) {
+		uint8_t want = fw_name_idx < len ? machine.machine_name[fw_name_idx] : 0;
+		if (c == want) {
+			if (++fw_name_idx > len)
+				fw_name_found = 1;
+			return;
+		}
+		if (!fw_name_idx)
+			return;
+		// Longest proper border of the matched prefix
+		for (k = fw_name_idx - 1; k; k--) {
+			for (j = 0; j < k; j++)
+				if (machine.machine_name[j] != machine.machine_name[fw_name_idx - k + j])
+					break;
+			if (j == k)
+				break;
+		}
+		fw_name_idx = k;
+	}
+}
+
 // Source window for stream_upload(); filled by the caller before the call
 __xdata struct {
 	__xdata uint8_t *p;
@@ -505,7 +549,16 @@ uint8_t stream_upload(void)
 				// Both bodies are 33 bytes; Content-Length lets the
 				// browser complete the response without waiting for
 				// the connection close (which a reset would swallow)
-				if (crc_final == 0xb001) {
+				if (crc_final == 0xb001 && !fw_name_found) {
+					// Valid image for another board: unstage it, or the
+					// bootloader would accept it (its CRC is fine).
+					print_string("Image is for another board! Aborting.\n");
+					flash_region.addr = FIRMWARE_UPLOAD_START;
+					flash_sector_erase();
+					slen = strtox(outbuf, "HTTP/1.1 400 Bad Request\r\nContent-Length: 31\r\n"
+						"Content-Type: text/plain\r\n\r\n"
+						"NO: image is for another board\n");
+				} else if (crc_final == 0xb001) {
 					print_string("Checksum OK.\nUpload to flash done, will reset!\n");
 					slen = strtox(outbuf, "HTTP/1.1 200 OK\r\nContent-Length: 33\r\n"
 						"Content-Type: text/plain\r\n\r\n"
@@ -540,6 +593,7 @@ uint8_t stream_upload(void)
 				write_len += bindex;
 				bindex = 0;
 			}
+			fw_name_step(upload_settings.p[upload_settings.bptr]);
 			crc16_bank1(upload_settings.p + upload_settings.bptr);
 			flash_buf[write_len++] = upload_settings.p[upload_settings.bptr++];
 			if (write_len >= FLASH_PAGE_SIZE) {
@@ -636,6 +690,8 @@ static void handle_firmware_fragment(__xdata uint8_t *p)
 	set_sys_led_state(SYS_LED_FAST);
 
 	crc_value = 0;
+	fw_name_idx = 0;
+	fw_name_found = 0;
 	bindex = 0;
 	write_len = 0;
 	// A verdict is only built once the upload part completes;

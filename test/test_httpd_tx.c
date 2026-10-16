@@ -62,6 +62,38 @@ static uint8_t pattern(uint32_t addr)
 }
 
 /* ---- firmware environment below httpd.c --------------------------------- */
+#include "machine.h"
+const struct machine machine = { .machine_name = "ABAB1" };
+extern uint8_t fw_name_idx, fw_name_found;
+void fw_name_step(uint8_t c);
+
+/* Streams buf through the upload board matcher, as stream_upload() does. */
+static int image_has_board_name(const uint8_t *buf, size_t n)
+{
+	fw_name_idx = 0;
+	fw_name_found = 0;
+	for (size_t i = 0; i < n; i++)
+		fw_name_step(buf[i]);
+	return fw_name_found;
+}
+
+static void scenario_board_name(void)
+{
+	static const uint8_t ok[] = "xx\0ABAB1\0yy";
+	static const uint8_t overlap[] = "ABABABAB1\0";   /* needs fallback */
+	static const uint8_t no_nul[] = "ABAB1xx";
+	static const uint8_t other[] = "ABAB2\0ABAB\0";
+	static const uint8_t prefix[] = "AABAB1\0";        /* name ends the image */
+
+	printf("== httpd: firmware upload board check ==\n");
+	CHECK(image_has_board_name(ok, sizeof ok - 1), "board: name + NUL found");
+	CHECK(image_has_board_name(overlap, sizeof overlap - 1), "board: overlapping prefix still found");
+	CHECK(!image_has_board_name(no_nul, sizeof no_nul - 1), "board: name without NUL rejected");
+	CHECK(!image_has_board_name(other, sizeof other - 1), "board: another board's image rejected");
+	CHECK(image_has_board_name(prefix, sizeof prefix - 1), "board: name after a partial match found");
+	CHECK(!image_has_board_name((const uint8_t *)"", 0), "board: empty image rejected");
+}
+
 
 volatile uint8_t sfr_data[4];
 volatile uint32_t ticks;
@@ -504,6 +536,7 @@ int main(int argc, char **argv)
 	scenario_growing_window();
 	scenario_rexmit_after_shrink();
 	scenario_bad_l4_checksum();
+	scenario_board_name();
 
 	printf("\n%s (%d failure%s)\n",
 	       failures ? "BENCH: FAILURES" : "BENCH: ALL PASS",
