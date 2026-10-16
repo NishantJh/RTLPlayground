@@ -5,15 +5,15 @@ nav_dash:"Dashboard",nav_ports:"Ports",nav_stp:"Spanning tree",nav_stats:"Statis
 nav_vlan:"VLANs",nav_l2:"MAC table",nav_mirror:"Mirroring",nav_isolate:"Isolation",nav_lag:"LAG",nav_eee:"EEE",
 nav_bw:"Bandwidth",nav_system:"System",nav_fw:"Firmware",nav_lldp:"LLDP",
 hdr_dirty:"unsaved changes",hdr_dirty_t:"Running config differs from startup config",
-hdr_save:"Save to flash",hdr_save_t:"Persist running configuration to flash",
+hdr_save:"Save config",hdr_save_t:"Keep the running configuration after a reboot (writes it to flash)",
 th_auto:"System",th_auto_sel:"System (Selenized)",sy_display:"Display",sy_theme:"Theme",sy_display_note:"Stored in this browser only.",th_light:"Light",th_dark:"Dark",
 th_sel_light:"Selenized Light",th_sel_dark:"Selenized Dark",
-th_auto_uni:"System (UniFi style)",th_uni_light:"UniFi style Light",th_uni_dark:"UniFi style Dark",
+th_auto_uni:"System (UniFi style)",pt_profile:"VLANs",v_native:"Native",v_edit:"Edit",v_ports_none:"no ports",th_uni_light:"UniFi style Light",th_uni_dark:"UniFi style Dark",
 d_t_ports:"Ports up",d_t_tx:"TX total",d_t_rx:"RX total",d_t_err:"Errors",d_chart:"Throughput",
 d_chart_h:"packets/s, all ports, last 5 minutes",d_peak:"peak {v} pps",
 dr_overview:"Overview",dr_settings:"Settings",dr_vlans:"VLANs",dr_native:"Native VLAN",dr_tagged:"Tagged VLANs",
 dr_all:"All",dr_none:"None",dr_lag:"Port {p} is in LAG {n}: VLAN changes apply to all its members ({m}).",
-dr_note:"Changes go to the running config. Use Save to flash to keep them; a power cycle restores the saved config.",
+dr_note:"Changes go to the running config. Use Save config to keep them; a power cycle restores the saved config.",
 dr_kept:"VLAN {v} would be left without members and was not changed",dr_nochange:"Nothing to change",
 
 c_port:"Port",c_name:"Name",c_link:"Link",c_apply:"Apply",c_cancel:"Cancel",c_confirm:"Confirm",
@@ -35,7 +35,7 @@ stp_prio:"Bridge priority",stp_hello:"Hello [s]",stp_maxage:"Max age [s]",stp_fw
 stp_txhold:"TX hold",stp_bridge_apply:"Apply bridge settings",
 stp_off_msg:"Spanning tree is disabled: all ports forward.",stp_bridge:"Bridge",stp_root:"Root",
 stp_root_self:"this bridge is the root",stp_via:"via port",stp_cost:"path cost",stp_tc:"topology changes",
-stp_prio_note:"Lower priority wins the root election (default 8 = 32768). Settings apply immediately; use Save to flash to keep them.",
+stp_prio_note:"Lower priority wins the root election (default 8 = 32768). Settings apply immediately; use Save config to keep them.",
 stp_portcfg:"Port configuration",stp_edge:"Edge",stp_pcost:"Path cost",stp_pprio:"Priority",
 stp_guard:"Guard",stp_filter:"BPDU filter",stp_p2p:"Point-to-point",
 stp_port_note:"Edge ports forward immediately and cause no topology change; Auto treats a port as edge after 3 s without BPDUs, and any received BPDU revokes it. Path cost 0 = automatic.",
@@ -107,11 +107,11 @@ sy_tz:"Time zone",sy_dst:"Daylight saving",sy_dst_eu:"Europe",
 sy_dst_us:"United States",sy_now:"Local time",
 sy_sync:"Last synchronisation",sy_ntpaddr:"Server address",sy_nosync:"not synchronised",sy_waiting:"waiting for the server",
 sy_ago:"{n} min ago",sy_ntp_err:"Enter the host name or IPv4 address of the NTP server",sy_ntpint_err:"Poll interval must be 1-1440",
-sy_time_note:"The switch has no battery backed clock: the time is lost at every restart and set again from the NTP server once the network is up. Save to flash to keep the settings.",
+sy_time_note:"The switch has no battery backed clock: the time is lost at every restart and set again from the NTP server once the network is up. Save config to keep the settings.",
 sy_sysport_err:"Syslog port must be 1-65535",
 sy_pw_len:"Password: 1-20 characters",sy_pw_space:"Password cannot contain spaces",sy_pw_match:"Passwords do not match",
-sy_pw_q:"Change admin password?",sy_pw_d:"Takes effect immediately for new logins. Save to flash to persist.",
-sy_reboot_q:"Reboot the switch?",sy_reboot_d:"There are UNSAVED changes and they will be lost. Save to flash first if you want to keep them.",
+sy_pw_q:"Change admin password?",sy_pw_d:"Takes effect immediately for new logins. Save config to persist.",
+sy_reboot_q:"Reboot the switch?",sy_reboot_d:"There are UNSAVED changes and they will be lost. Save config first if you want to keep them.",
 sy_rebooting:"Rebooting, reconnect in about 20 s",sy_bytes:"bytes",
 cw_title:"Write this startup configuration?",cw_save_title:"Save running configuration to flash?",
 cw_info:"{n} / 2048 bytes, replayed line by line on every boot",
@@ -762,7 +762,7 @@ function linkBadge(p){
 
 function applyTheme(){
   var pref;
-  try{pref=localStorage.getItem("theme")||"auto";}catch(e){pref="auto";}
+  try{pref=localStorage.getItem("theme")||"auto-uni";}catch(e){pref="auto-uni";}
   var dark=window.matchMedia("(prefers-color-scheme: dark)").matches;
   var th=pref;
   if(pref==="auto")th=dark?"dark":"light";
@@ -913,6 +913,7 @@ function showTab(id){
     $("nv-"+tb.id).classList.toggle("act",tb.id===id);
   });
   $("ttitle").textContent=t("nav_"+id);
+  document.body.dataset.tab=id;
   $("nav").classList.remove("open");
   if(location.hash!=="#"+id)history.replaceState(null,"","#"+id);
   var hk=tabHooks[id];
@@ -1121,10 +1122,12 @@ function closeDrawer(){
 $("dx").addEventListener("click",closeDrawer);
 $("dback").addEventListener("click",closeDrawer);
 addEventListener("keydown",function(e){if(e.key==="Escape"&&S.detail!=null)closeDrawer()});
-function drawerVlans(i,box){
-  var vl=[],lagMask=0;
-  getJSON("/vlanlist").then(function(d){
+/* Every VLAN with its member/untagged/PVID masks (logical port bits). */
+function getVlanData(){
+  var vl=[],mgmt=0;
+  return getJSON("/vlanlist").then(function(d){
     var p=Promise.resolve();
+    mgmt=d.mgmt||0;
     (d.vlan||[]).forEach(function(v){
       p=p.then(function(){return getJSON("/vlan.json?vid="+v.id)}).then(function(x){
         var m=parseInt(x.members,16);
@@ -1132,7 +1135,14 @@ function drawerVlans(i,box){
       });
     });
     return p;
-  }).then(function(){return getJSON("/lag.json").catch(function(){return[]})}).then(function(lags){
+  }).then(function(){vl.mgmt=mgmt;return vl});
+}
+var VCOL=["#006fff","#00a35a","#7c4dff","#e5484d","#f5a524","#0b97b8","#d6409f","#6b7079"];
+function vcolor(id){return VCOL[id%VCOL.length]}
+function vtag(v){return'<span class="vtag" style="--vc:'+vcolor(v.id)+'">'+v.id+(v.name?" "+esc(v.name):"")+"</span>"}
+function drawerVlans(i,box){
+  var vl=[],lagMask=0;
+  getVlanData().then(function(d){vl=d;return getJSON("/lag.json").catch(function(){return[]})}).then(function(lags){
     if(S.detail!==i)return;
     var bit=S.physToLog[i],lagNum=0;
     lags.forEach(function(l){var m=parseInt(l.members,2);if((m>>bit)&1){lagMask=m;lagNum=l.lagNum+1}});
@@ -1164,7 +1174,10 @@ function drawerVlans(i,box){
     box.appendChild(h("div",{class:"acts"},[h("button",{class:"ctl pri",text:t("c_apply"),onclick:function(){
       var cmds=vlanProfileCmds(vl,targets,parseInt(nat.value,10),function(id){return chk[id].checked});
       if(!cmds.length){toast(t("dr_nochange"));return;}
-      postCmds(cmds).then(function(){if(S.detail===i)drawerVlans(i,box)}).catch(function(){});
+      postCmds(cmds).then(function(){
+        if(S.detail===i)drawerVlans(i,box);
+        if(curTab==="ports")loadProfiles();
+      }).catch(function(){});
     }})]));
   }).catch(function(){box.textContent="-"});
 }
@@ -1205,7 +1218,7 @@ function renderInfo(){
     try{localStorage.setItem("rtl_host",S.info.hostname);}catch(e){}
   }
   if(S.info.sw_ver)$("fver").textContent="RTLPlayground "+S.info.sw_ver;
-  $("dvname").textContent=S.info.hostname||"Switch";
+  $("dvname").textContent=$("tdev").textContent=S.info.hostname||"Switch";
   $("dvsub").textContent=[S.info.hw_ver,S.info.ip_address,S.info.mac_address,S.info.sw_ver].filter(Boolean).join("  \u00b7  ");
   if(S.info.chip_temp)$("dttemp").innerHTML=esc(S.info.chip_temp)+"<small>\u00b0C</small>";
 }
@@ -1282,9 +1295,10 @@ function buildPorts(){
       spd.appendChild(h("option",{value:o[0],text:speedLabel(o[1])}));
     });
     var tr=tb.insertRow();
-    tr.insertCell().textContent=p.portNum+(p.isSFP?" (SFP)":"");
+    tr.insertCell().appendChild(h("a",{text:p.portNum+(p.isSFP?" (SFP)":""),onclick:function(){portDetail(i)}}));
     tr.insertCell().appendChild(h("input",{class:"in",id:"pname"+i,size:"9",maxlength:"15",value:p.name||"",placeholder:"-"}));
     tr.insertCell().id="plink"+i;
+    var pc=tr.insertCell();pc.id="pprof"+i;pc.className="prof";pc.textContent="-";
     var mc=tr.insertCell();mc.id="pmac"+i;mc.className="mono";mc.textContent="-";
     tr.insertCell().appendChild(spd);
     var sw=h("label",{class:"switch"},[h("input",{type:"checkbox",id:"pen"+i}),h("i")]);
@@ -1294,6 +1308,21 @@ function buildPorts(){
     tr.insertCell().appendChild(h("button",{class:"ctl",text:t("c_apply"),onclick:function(){applyPort(i)}}));
   });
   loadMtu();
+}
+/* Native VLAN tag plus the tagged ones, the way UniFi lists a port profile. */
+function loadProfiles(){
+  return getVlanData().then(function(vl){
+    for(var i=0;i<S.n;i++){
+      var el=$("pprof"+i);
+      if(!el)continue;
+      var bit=S.physToLog[i],nat=null,tg=[];
+      vl.forEach(function(v){
+        if((v.pv>>bit)&1)nat=v;
+        if(((v.mem>>bit)&1)&&!((v.unt>>bit)&1))tg.push(v);
+      });
+      el.innerHTML=(nat?vtag(nat):"")+(tg.length?'<span class="mut">+ '+esc(t("v_tagged"))+" "+tg.map(function(v){return v.id}).join(", ")+"</span>":"")||"-";
+    }
+  }).catch(function(){});
 }
 function loadMtu(){
   return getJSON("/mtu.json").then(function(s){
@@ -1356,7 +1385,7 @@ function applyPort(i){
   postCmds(cmds).then(loadMtu).catch(function(){});
 }
 tabHooks.ports={
-  enter:function(){statusPoller.start();needPorts(function(){buildPorts();portsMacs()})},
+  enter:function(){statusPoller.start();needPorts(function(){buildPorts();portsMacs();loadProfiles()})},
   leave:function(){statusPoller.stop();l2Gen++},
   status:portsStatus,
 };
@@ -1634,38 +1663,32 @@ function rangeStr(list){
   return parts.join(", ");
 }
 function vlanRefresh(){
-  var tb=$("vtable").tBodies[0];
-  return getJSON("/vlanlist").then(function(d){
-    var vl=d.vlan||[];
-    $("vmgmtcur").textContent=d.mgmt?String(d.mgmt):t("v_mgmt_none");
+  var box=$("vnets");
+  return getVlanData().then(function(vl){
+    $("vmgmtcur").textContent=vl.mgmt?String(vl.mgmt):t("v_mgmt_none");
     $("vempty").style.display=vl.length?"none":"";
-    tb.innerHTML="";
-    var p=Promise.resolve();
+    box.innerHTML="";
+    function chips(mask,cls){
+      var ps=maskToPorts(mask);
+      return ps.length?ps.map(function(p){return'<span class="chip'+cls+'">'+p+"</span>"}).join(""):'<span class="mut">'+esc(t("v_ports_none"))+"</span>";
+    }
     vl.forEach(function(v){
-      p=p.then(function(){return getJSON("/vlan.json?vid="+v.id).catch(function(){return null})}).then(function(d){
-        var tr=tb.insertRow();
-        tr.insertCell().appendChild(h("a",{href:"#vlan",text:String(v.id),onclick:function(e){
-          e.preventDefault();$("vvid").value=v.id;vlanLoad();
-        }}));
-        tr.insertCell().textContent=v.name||"";
-        if(!d){for(var c=0;c<4;c++)tr.insertCell().textContent="?";}
-        else{
-          var m=parseInt(d.members,16),mem=m&0x3ff,unt=((m>>10)&0x3ff)&mem;
-          var pv=parseInt(d.pvid,16)&0x3ff;
-          tr.insertCell().textContent=rangeStr(maskToPorts(mem));
-          tr.insertCell().textContent=rangeStr(maskToPorts(mem&~unt));
-          tr.insertCell().textContent=rangeStr(maskToPorts(unt));
-          tr.insertCell().textContent=rangeStr(maskToPorts(pv));
-        }
-        var del=tr.insertCell();
-        if(v.id!==1)del.appendChild(h("button",{class:"ctl",text:"\u2715",title:t("v_del_t"),onclick:function(){
-          confirmModal(t("v_del_q",{n:v.id}),t("v_del_d"),function(){
-            postCmd("vlan "+v.id+" d").then(vlanRefresh).catch(function(){});
-          });
-        }}));
-      }).catch(function(){});
+      var act=h("div",{class:"act"});
+      box.appendChild(h("div",{class:"net",style:"--vc:"+vcolor(v.id)},[
+        h("span",{class:"vid",text:String(v.id)}),
+        h("div",{class:"nm",html:"<b>"+esc(v.name||("VLAN "+v.id))+"</b><small>VLAN "+v.id+(v.id===vl.mgmt?" · "+esc(t("v_mgmt")):"")+"</small>"}),
+        h("div",{class:"pp",html:"<div><span>"+esc(t("v_native"))+"</span>"+chips(v.unt," u")+"</div><div><span>"+esc(t("v_tagged"))+"</span>"+chips(v.mem&~v.unt,"")+"</div>"}),
+        act,
+      ]));
+      act.appendChild(h("button",{class:"ctl",text:t("v_edit"),onclick:function(){
+        $("vvid").value=v.id;vlanLoad();$("veditcard").scrollIntoView({behavior:"smooth"});
+      }}));
+      if(v.id!==1)act.appendChild(h("button",{class:"ctl",text:"✕",title:t("v_del_t"),onclick:function(){
+        confirmModal(t("v_del_q",{n:v.id}),t("v_del_d"),function(){
+          postCmd("vlan "+v.id+" d").then(vlanRefresh).catch(function(){});
+        });
+      }}));
     });
-    return p;
   });
 }
 function buildVlanEdit(){
