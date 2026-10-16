@@ -1,12 +1,12 @@
 name: Sync upstream
 
-# Weekly: merge logicog/RTLPlayground main into a sync branch and open a PR,
+# Monthly (1st): merge logicog/RTLPlayground main into a sync branch and open a PR,
 # so CI runs before anything lands on main. Conflicts are reported on an
 # issue, never auto-resolved.
 
 on:
   schedule:
-    - cron: '17 5 * * 1'
+    - cron: '17 5 1 * *'
   workflow_dispatch:
 
 permissions:
