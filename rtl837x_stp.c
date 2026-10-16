@@ -7,6 +7,7 @@
 // #define DEBUG
 
 #include <stdint.h>
+#include <stddef.h>
 #include "rtl837x_common.h"
 #include "rtl837x_sfr.h"
 #include "rtl837x_regs.h"
@@ -91,6 +92,9 @@ __xdata uint8_t  stp_rxbody;
 __xdata uint16_t stp_rxlen;		/* received frame length, saved before uip_len is consumed */
 __xdata uint8_t  stp_msg_age;		/* message age of the root info we hold, seconds */
 __xdata uint16_t stp_tc_while;		/* ticks left to set the TC flag in our BPDUs */
+__xdata uint16_t stp_tc_up;		/* ticks left to tell the root about a topology change (root port TX) */
+__xdata uint8_t  stp_agreed;		/* the root port just skipped its listen period */
+__xdata uint8_t  stp_tcn_tx;		/* one-shot: the next stp_cnf_send() builds a TCN BPDU */
 __xdata uint8_t  stp_i;
 __xdata uint32_t stp_cost_scratch;
 __xdata uint8_t  stp_loop_peer;		/* the other own port seen on a looped segment */
@@ -168,12 +172,16 @@ struct stp_pkt_in {
 #define BPDU_LEN_FULL_BODY	40
 
 #define BPDU_FLAG_TC		0x01
+#define BPDU_FLAG_PROPOSAL	0x02
 #define BPDU_FLAG_LEARNING	0x10
 #define BPDU_FLAG_FORWARDING	0x20
+#define BPDU_FLAG_AGREEMENT	0x40
 #define BPDU_FLAG_TCACK		0x80
 
+#define BPDU_ROLE_ALTERNATE	(0b01 << 2)
 #define BPDU_ROLE_ROOT		(0b10 << 2)
 #define BPDU_ROLE_DESIGNATED	(0b11 << 2)
+#define BPDU_ROLE_MASK		(0b11 << 2)
 
 /* Port state as the MSTP register encodes it, two bits per port. */
 #define STP_ST_DISABLED		0b00
@@ -407,6 +415,17 @@ static void stp_ent_apply(uint8_t e) __reentrant
 }
 
 
+/* Tell the root: its root port carries TC (RSTP) or TCN (STP) BPDUs for a
+ * hello period past the last change, starting with the next tick. */
+static void stp_tc_notify_root(void)
+{
+	if (stp_root_port == 0xff)
+		return;
+	stp_tc_up = ((uint16_t)stp_hello_s + 1) * STP_HZ;
+	port_hello[stp_root_port] = 1;
+}
+
+
 /* Signal a topology change. Edge ports are exempt. */
 static void stp_topology_change(uint8_t port) __reentrant
 {
@@ -414,6 +433,7 @@ static void stp_topology_change(uint8_t port) __reentrant
 		return;
 	stp_tc_count++;
 	stp_tc_while = ((uint16_t)stp_maxage_s + stp_fwddelay_s) * STP_HZ;
+	stp_tc_notify_root();
 	if (port >= STP_LAG_BASE) {
 		for (uint8_t i = machine.min_port; i <= machine.max_port; i++)
 			if (stp_ent_has(port, i))
@@ -522,16 +542,22 @@ void stp_cnf_send(uint8_t port) __reentrant
 		STP_O->bpdu_type = BPDU_TYPE_RST;
 		reg_read_m(RTL837X_MSTP_STATES);
 		stp_scratch = stp_state_port(port);
-		STP_O->flags = port == stp_root_port ? BPDU_ROLE_ROOT : BPDU_ROLE_DESIGNATED;
+		STP_O->flags = port == stp_root_port ? BPDU_ROLE_ROOT
+			     : stp_alt[port] ? BPDU_ROLE_ALTERNATE : BPDU_ROLE_DESIGNATED;
 		if (((sfr_data[3 - (stp_scratch >> 2)] >> ((stp_scratch << 1) & 0x7)) & STP_ST_MASK) == STP_ST_FORWARDING)
 			STP_O->flags |= BPDU_FLAG_LEARNING | BPDU_FLAG_FORWARDING;
+		/* A designated port still waiting to forward asks its neighbour to
+		 * agree, so it can skip the forward delay on a point-to-point link. */
+		else if (port != stp_root_port && !stp_alt[port] && port_timers[port]
+		         && !stp_loop_held[port] && stp_pp2p[port] != 2)
+			STP_O->flags |= BPDU_FLAG_PROPOSAL;
 	} else {
 		STP_O->msg_len = HTONS(BPDU_LEN_CONFIG);
 		STP_O->version = BPDU_VER_STP;
 		STP_O->bpdu_type = BPDU_TYPE_CONFIG;
 		STP_O->flags = 0x00;
 	}
-	if (stp_tc_while)
+	if (port == stp_root_port ? stp_tc_up : stp_tc_while)
 		STP_O->flags |= BPDU_FLAG_TC;
 	STP_O->flags |= stp_tx_flags_extra;
 	stp_tx_flags_extra = 0;
@@ -564,6 +590,16 @@ void stp_cnf_send(uint8_t port) __reentrant
 	STP_O->hello = stp_hello_s;
 	STP_O->fwd_delay = stp_fwddelay_s;
 	STP_O->version1_length = 0;	/* RST BPDU: no version-1 information */
+
+	if (stp_tcn_tx) {	/* TCN: type only, no body */
+		stp_tcn_tx = 0;
+		STP_O->msg_len = HTONS(7);
+		STP_O->version = BPDU_VER_STP;
+		STP_O->bpdu_type = BPDU_TYPE_TCN;
+		uip_len = offsetof(struct stp_pkt, flags);
+		tcpip_output();
+		return;
+	}
 
 	uip_len = stp_rstp ? sizeof(struct stp_pkt) : sizeof(struct stp_pkt) - 1;
 	tcpip_output();
@@ -668,6 +704,10 @@ void stp_in(void) __banked
 		return;
 	}
 
+	/* The root port's neighbour acknowledged our TCN: stop repeating it. */
+	if ((STP_I->flags & BPDU_FLAG_TCACK) && port == stp_root_port)
+		stp_tc_up = 0;
+
 	/* Topology Change in transit. The flag arms a short window that our
 	 * own BPDUs copy downstream (the TX side already sends TC while
 	 * stp_tc_while runs) and that each further flagged BPDU refreshes, so
@@ -687,6 +727,9 @@ void stp_in(void) __banked
 		}
 		if (stp_tc_while < ((uint16_t)stp_hello_s + 1) * STP_HZ)
 			stp_tc_while = ((uint16_t)stp_hello_s + 1) * STP_HZ;
+		/* Not from the root port itself: that TC came from above. */
+		if (port != stp_root_port)
+			stp_tc_notify_root();
 	}
 
 	stp_record_designated(port);
@@ -738,6 +781,54 @@ void stp_in(void) __banked
 		 * worse): run the listen period again before forwarding. */
 		stp_alt[port] = 0;
 		port_timers[port] = (uint16_t)stp_fwddelay_s * STP_HZ;
+	}
+
+	if (!stp_rstp || STP_I->version < BPDU_VER_RSTP)
+		return;
+	stp_scratch = STP_I->flags;
+
+	/* Agreement from the neighbour we proposed to: our designated port can
+	 * forward now instead of after the forward delay. */
+	if ((stp_scratch & BPDU_FLAG_AGREEMENT) && (stp_scratch & BPDU_ROLE_MASK) == BPDU_ROLE_ROOT
+	    && port != stp_root_port && !stp_alt[port] && port_timers[port] && !stp_loop_held[port]) {
+		port_timers[port] = 0;
+		stp_state_set(port, STP_ST_FORWARDING);
+		print_string("STP: agreement, port forwarding ");
+		print_port_nl(port);
+		stp_topology_change(port);
+		return;
+	}
+
+	/* Proposal from a designated port towards our root port (or an alternate
+	 * port, which is blocked anyway): put every other non-edge port into
+	 * sync (blocking, they re-propose in turn), forward on the root port and
+	 * answer with an Agreement. Needs a point-to-point link. */
+	if ((stp_scratch & BPDU_FLAG_PROPOSAL) && (stp_scratch & BPDU_ROLE_MASK) == BPDU_ROLE_DESIGNATED
+	    && (port == stp_root_port || stp_alt[port]) && stp_pp2p[port] != 2) {
+		if (port == stp_root_port) {
+			for (stp_i = 0; stp_i < STP_ENTITIES; stp_i++) {
+				if (stp_i == port || !stp_ent_active(stp_i) || stp_alt[stp_i] || port_timers[stp_i])
+					continue;
+				if ((stp_pflags[stp_i] & (STP_PF_ENABLED | STP_PF_TRIPPED | STP_PF_OPEREDGE | STP_PF_ADMEDGE))
+				    != STP_PF_ENABLED || !((stp_link_prev >> stp_i) & 1))
+					continue;
+				stp_state_set(stp_i, STP_ST_BLOCKING);
+				port_timers[stp_i] = (uint16_t)stp_fwddelay_s * STP_HZ;
+				port_hello[stp_i] = 1;
+			}
+			if (port_timers[port]) {
+				port_timers[port] = 0;
+				stp_state_set(port, STP_ST_FORWARDING);
+				stp_agreed = 1;
+			}
+		}
+		stp_tx_flags_extra = BPDU_FLAG_AGREEMENT;
+		stp_cnf_send(port);
+		uip_len = 0;
+		if (stp_agreed) {
+			stp_agreed = 0;
+			stp_topology_change(port);
+		}
 	}
 }
 
@@ -836,12 +927,20 @@ void stp_timers(void) __banked
 			port_hello[stp_i]--;
 		if (!port_hello[stp_i]) {
 			port_hello[stp_i] = (uint16_t)stp_hello_s * STP_HZ;
-			/* Only designated ports announce periodically: the root port is
+			/* Designated ports announce periodically: the root port is
 			 * where our own root information comes FROM, and echoing it back
 			 * there just feeds the upstream bridge its own data (and looks
 			 * like a competing designated bridge on that segment). */
-			if (stp_i != stp_root_port && !stp_alt[stp_i])
+			if (stp_i == stp_root_port) {
+				/* The root port only talks to pass a topology change up. */
+				if (stp_tc_up) {
+					stp_tcn_tx = !stp_rstp;
+					stp_cnf_send(stp_i);
+					stp_tcn_tx = 0;
+				}
+			} else if (!stp_alt[stp_i]) {
 				stp_cnf_send(stp_i);
+			}
 		}
 
 		/* An alternate port that stopped hearing a better path is a plain
@@ -877,6 +976,8 @@ void stp_timers(void) __banked
 
 	if (stp_tc_while)
 		stp_tc_while--;
+	if (stp_tc_up)
+		stp_tc_up--;
 
 	/* Age out a root that went silent: reclaim the tree. */
 	if (stp_root_port != 0xff
@@ -932,6 +1033,7 @@ void stp_defaults(void) __banked
 	}
 	stp_tc_count = 0;
 	stp_tc_while = 0;
+	stp_tc_up = 0;
 	stp_claim_root();
 }
 
