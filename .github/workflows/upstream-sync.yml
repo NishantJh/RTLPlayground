@@ -20,11 +20,9 @@ env:
 
 jobs:
   sync:
-    # Self-hosted runner on a personal PC (git bash is used for the steps).
+    # Self-hosted runner on a personal PC; steps use PowerShell, which
+    # every Windows runner has (a bare `bash` may resolve to WSL or not exist).
     runs-on: [self-hosted, windows]
-    defaults:
-      run:
-        shell: bash
     steps:
       - uses: actions/checkout@v6
         with:
@@ -35,24 +33,34 @@ jobs:
 
       - name: Merge upstream main
         id: merge
+        shell: powershell
         run: |
+          $ErrorActionPreference = 'Continue'
           git config user.name "upstream-sync"
           git config user.email "upstream-sync@users.noreply.github.com"
-          git remote add upstream "$UPSTREAM" || git remote set-url upstream "$UPSTREAM"
+          git remote remove upstream 2>$null
+          git remote add upstream $env:UPSTREAM
           git fetch upstream main
-          if git merge-base --is-ancestor upstream/main origin/main; then
-            echo "status=current" >> "$GITHUB_OUTPUT"; exit 0
-          fi
-          git checkout -B "$SYNC_BRANCH" origin/main
-          if git merge --no-ff -m "Merge upstream logicog/RTLPlayground main" upstream/main; then
-            git push --force-with-lease origin "$SYNC_BRANCH"
-            echo "status=merged" >> "$GITHUB_OUTPUT"
-          else
-            git diff --name-only --diff-filter=U > "$RUNNER_TEMP/conflicts.txt"
+          if ($LASTEXITCODE -ne 0) { throw "fetch upstream failed" }
+          git merge-base --is-ancestor upstream/main origin/main
+          if ($LASTEXITCODE -eq 0) {
+            "status=current" | Out-File -Append -Encoding utf8 $env:GITHUB_OUTPUT
+            exit 0
+          }
+          git checkout -B $env:SYNC_BRANCH origin/main
+          git merge --no-ff -m "Merge upstream logicog/RTLPlayground main" upstream/main
+          if ($LASTEXITCODE -eq 0) {
+            git push --force origin $env:SYNC_BRANCH
+            if ($LASTEXITCODE -ne 0) { throw "push failed" }
+            $status = "merged"
+          } else {
+            git diff --name-only --diff-filter=U | Out-File -Encoding utf8 "$env:RUNNER_TEMP/conflicts.txt"
             git merge --abort
-            echo "status=conflict" >> "$GITHUB_OUTPUT"
-          fi
-          echo "behind=$(git rev-list --count origin/main..upstream/main)" >> "$GITHUB_OUTPUT"
+            $status = "conflict"
+          }
+          $behind = git rev-list --count origin/main..upstream/main
+          "status=$status" | Out-File -Append -Encoding utf8 $env:GITHUB_OUTPUT
+          "behind=$behind" | Out-File -Append -Encoding utf8 $env:GITHUB_OUTPUT
 
       - name: Open or update the PR
         if: steps.merge.outputs.status == 'merged'
